@@ -1,0 +1,310 @@
+:root {
+  --paper: #ffffff;
+  --ink: #111111;
+  --mist: rgba(17, 17, 17, 0.14);
+  --muted: rgba(17, 17, 17, 0.55);
+  --accent: #b21f24; /* 点睛红：尽量少用 */
+
+  --maxWidth: 920px;
+  --pagePadX: 44px;
+  --pagePadY: 56px;
+
+  --radius: 14px;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Noto Sans CJK SC",
+    "Microsoft YaHei",
+    Arial,
+    sans-serif;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.container {
+  width: 100%;
+  max-width: var(--maxWidth);
+  margin: 0 auto;
+  padding: 0 var(--pagePadX);
+}
+
+.appShell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.siteHeader {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(17, 17, 17, 0.08);
+}
+
+.siteHeaderInner {
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.navLink {
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 8px 2px;
+  border-bottom: 1px solid transparent;
+}
+
+.navLink:hover {
+  color: var(--ink);
+  border-bottom-color: rgba(17, 17, 17, 0.2);
+}
+
+.navLink[aria-current="page"] {
+  font-weight: 600;
+  color: var(--ink);
+  border-bottom-color: rgba(17, 17, 17, 0.22);
+}
+
+.siteMain {
+  flex: 1;
+  padding: var(--pagePadY) 0;
+}
+
+.pageTitle {
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  font-weight: 500;
+  color: rgba(17, 17, 17, 0.85);
+  margin-bottom: 28px;
+}
+
+.prose {
+  color: rgba(17, 17, 17, 0.86);
+  font-size: 16px;
+}
+
+.prose p {
+  margin: 0 0 18px 0;
+}
+
+.prose h2,
+.prose h3 {
+  margin: 26px 0 12px 0;
+  font-weight: 550;
+  letter-spacing: 0.04em;
+}
+
+.prose h2 {
+  font-size: 18px;
+}
+
+.prose h3 {
+  font-size: 16px;
+  color: rgba(17, 17, 17, 0.84);
+}
+
+.prose ul,
+.prose ol {
+  margin: 0 0 18px 18px;
+}
+
+.prose li {
+  margin: 6px 0;
+}
+
+.prose blockquote {
+  margin: 18px 0;
+  padding-left: 14px;
+  border-left: 2px solid rgba(17, 17, 17, 0.18);
+  color: rgba(17, 17, 17, 0.72);
+}
+
+.prose code {
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    monospace;
+  font-size: 0.95em;
+}
+
+.prose pre {
+  margin: 18px 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: var(--radius);
+  border: 1px solid rgba(17, 17, 17, 0.1);
+  background: rgba(17, 17, 17, 0.03);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.siteFooter {
+  padding: 42px 0 56px 0;
+}
+
+.siteFooterInner {
+  display: flex;
+  justify-content: center;
+}
+
+.footerText {
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: rgba(17, 17, 17, 0.35);
+}
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: 64px;
+}
+
+.homeHero {
+  min-height: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  text-align: center;
+  padding-top: 12px;
+}
+
+.homeLogo {
+  width: clamp(180px, 22vw, 280px);
+  height: auto;
+}
+
+.homeTagline {
+  font-size: 13px;
+  letter-spacing: 0.12em;
+}
+
+.homePreface {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.homePrefaceTitle {
+  font-size: 14px;
+  letter-spacing: 0.18em;
+  color: rgba(17, 17, 17, 0.55);
+  margin-bottom: 18px;
+}
+
+@media (min-width: 980px) {
+  /* Desktop: show logo + preface in one viewport */
+  .home {
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr);
+    align-items: start;
+    gap: 56px;
+  }
+
+  .homeHero {
+    align-items: flex-start;
+    text-align: left;
+    justify-content: flex-start;
+    padding-top: 6px;
+    gap: 14px;
+  }
+
+  .homeLogo {
+    width: 220px;
+  }
+
+  .homePreface {
+    max-width: 720px;
+    margin: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --pagePadX: 20px;
+    --pagePadY: 36px;
+  }
+
+  .siteHeaderInner {
+    height: auto;
+    padding: 12px 0;
+    align-items: flex-start;
+  }
+
+  .nav {
+    gap: 12px;
+  }
+
+  .home {
+    gap: 42px;
+  }
+
+  .homeHero {
+    min-height: auto;
+    padding-top: 6px;
+  }
+
+  .homeLogo {
+    width: clamp(160px, 52vw, 220px);
+  }
+
+  .homePrefaceTitle {
+    margin-bottom: 14px;
+  }
+}

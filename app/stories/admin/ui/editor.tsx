@@ -9,19 +9,13 @@ type Story = {
   id: string;
   title: string;
   slug: string;
+  publicId?: string | null;
   body: string;
   status: StoryStatus;
   publishedAt: string | null;
+  authorEmail?: string | null;
+  authorDisplayName?: string | null;
 };
-
-function slugify(input: string) {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
-}
 
 export default function Editor(props: { mode: "new" } | { mode: "edit"; id: string }) {
   const mode = props.mode;
@@ -31,14 +25,19 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
           id: "",
           title: "",
           slug: "",
+          publicId: null,
           body: "",
           status: "DRAFT",
           publishedAt: null,
+          authorEmail: null,
+          authorDisplayName: "",
         }
       : null
   );
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [preview, setPreview] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState<string>("");
 
   useEffect(() => {
     if (mode !== "edit") return;
@@ -53,7 +52,7 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
 
   const canPublish = useMemo(() => {
     if (!story) return false;
-    return story.title.trim().length > 0 && story.slug.trim().length > 0;
+    return story.title.trim().length > 0;
   }, [story]);
 
   const save = async (nextStatus?: StoryStatus) => {
@@ -68,9 +67,9 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             title: story.title,
-            slug: story.slug,
             body: story.body,
             status: nextStatus ?? story.status,
+            authorDisplayName: story.authorDisplayName,
           }),
         });
         const json = (await res.json()) as any;
@@ -87,9 +86,9 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: story.title,
-          slug: story.slug,
           body: story.body,
           status: nextStatus,
+          authorDisplayName: story.authorDisplayName,
         }),
       });
       const json = (await res.json()) as any;
@@ -106,6 +105,68 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
     }
   };
 
+  const remove = async () => {
+    if (mode !== "edit" || !story) return;
+    if (!confirm("删除后不可恢复。继续？")) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/admin/stories/${encodeURIComponent(story.id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error();
+      window.location.href = "/stories/admin";
+    } catch {
+      setMsg("无回应。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const uploadImageAndInsert = async (file: File) => {
+    if (!story) return;
+    try {
+      setSaving(true);
+      setMsg(null);
+
+      const fd = new FormData();
+      fd.set("file", file);
+      if (story.publicId) fd.set("publicId", story.publicId);
+      const res = await fetch("/api/admin/images", { method: "POST", body: fd });
+      const json = (await res.json().catch(() => null)) as any;
+      if (!res.ok || !json?.url) throw new Error();
+
+      const url = String(json.url);
+      const insert = `![](${url})\n`;
+      setStory((s) => (s ? { ...s, body: s.body + (s.body.endsWith("\n") ? "" : "\n") + insert } : s));
+    } catch {
+      setMsg("无回应。");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const togglePreview = async () => {
+    if (!story) return;
+    const next = !preview;
+    setPreview(next);
+    setMsg(null);
+    if (!next) return;
+
+    try {
+      const res = await fetch("/api/admin/markdown", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ markdown: story.body }),
+      });
+      const json = (await res.json()) as any;
+      if (!res.ok || !json?.html) throw new Error();
+      setPreviewHtml(String(json.html));
+    } catch {
+      setPreviewHtml("<p>……</p>");
+    }
+  };
+
   if (story === null) return <div className="muted">……</div>;
 
   return (
@@ -117,11 +178,43 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
         {mode === "edit" && story.status === "PUBLISHED" ? (
           <Link
             className="muted"
-            href={`/stories/${encodeURIComponent(story.slug)}`}
+            href={`/stories/${encodeURIComponent(story.publicId ?? story.slug)}`}
             style={{ fontSize: 13 }}
           >
             观看
           </Link>
+        ) : null}
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => void togglePreview()}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 12,
+            border: "1px solid rgba(17,17,17,0.12)",
+            background: "transparent",
+            cursor: saving ? "default" : "pointer",
+            fontSize: 13,
+          }}
+        >
+          {preview ? "写" : "预览"}
+        </button>
+        {mode === "edit" ? (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void remove()}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(17,17,17,0.12)",
+              background: "transparent",
+              cursor: saving ? "default" : "pointer",
+              fontSize: 13,
+            }}
+          >
+            删除
+          </button>
         ) : null}
       </div>
 
@@ -129,15 +222,7 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
         value={story.title}
         onChange={(e) => {
           const title = e.target.value;
-          setStory((s) =>
-            s
-              ? {
-                  ...s,
-                  title,
-                  slug: s.slug || slugify(title),
-                }
-              : s
-          );
+          setStory((s) => (s ? { ...s, title } : s));
         }}
         placeholder="标题"
         style={{
@@ -150,36 +235,77 @@ export default function Editor(props: { mode: "new" } | { mode: "edit"; id: stri
       />
 
       <input
-        value={story.slug}
-        onChange={(e) => setStory((s) => (s ? { ...s, slug: slugify(e.target.value) } : s))}
-        placeholder="slug (a-z0-9-)"
+        value={story.authorDisplayName ?? ""}
+        onChange={(e) => setStory((s) => (s ? { ...s, authorDisplayName: e.target.value } : s))}
+        placeholder="署名（可改）"
         style={{
           width: "100%",
           padding: "10px 14px",
           borderRadius: 12,
           border: "1px solid rgba(17,17,17,0.12)",
           fontSize: 13,
-          letterSpacing: "0.04em",
+          letterSpacing: "0.02em",
           color: "rgba(17,17,17,0.82)",
         }}
       />
 
-      <textarea
-        value={story.body}
-        onChange={(e) => setStory((s) => (s ? { ...s, body: e.target.value } : s))}
-        placeholder="正文（Markdown）"
-        rows={18}
-        style={{
-          width: "100%",
-          padding: "12px 14px",
-          borderRadius: 12,
-          border: "1px solid rgba(17,17,17,0.12)",
-          fontSize: 14,
-          lineHeight: 1.7,
-          fontFamily:
-            "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-        }}
-      />
+      {mode === "edit" ? (
+        <div className="muted" style={{ fontSize: 12, marginTop: -6 }}>
+          用户名（email）：{story.authorEmail ?? "—"}
+        </div>
+      ) : null}
+
+      {preview ? (
+        <div
+          className="prose"
+          style={{
+            width: "100%",
+            padding: "12px 14px",
+            borderRadius: 12,
+            border: "1px solid rgba(17,17,17,0.12)",
+            background: "rgba(17,17,17,0.02)",
+          }}
+          dangerouslySetInnerHTML={{ __html: previewHtml }}
+        />
+      ) : (
+        <textarea
+          value={story.body}
+          onChange={(e) => setStory((s) => (s ? { ...s, body: e.target.value } : s))}
+          placeholder="正文（Markdown）"
+          rows={18}
+          onPaste={(e) => {
+            const item = e.clipboardData?.items?.[0];
+            if (!item) return;
+            if (!item.type || !item.type.startsWith("image/")) return;
+            const file = item.getAsFile();
+            if (!file) return;
+
+            e.preventDefault();
+            void uploadImageAndInsert(file);
+          }}
+          onDragOver={(e) => {
+            const hasImage = Array.from(e.dataTransfer?.types ?? []).includes("Files");
+            if (hasImage) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            const file = e.dataTransfer?.files?.[0];
+            if (!file || !file.type.startsWith("image/")) return;
+
+            e.preventDefault();
+            void uploadImageAndInsert(file);
+          }}
+          style={{
+            width: "100%",
+            padding: "12px 14px",
+            borderRadius: 12,
+            border: "1px solid rgba(17,17,17,0.12)",
+            fontSize: 14,
+            lineHeight: 1.7,
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+          }}
+        />
+      )}
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <button

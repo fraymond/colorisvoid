@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
@@ -7,15 +9,9 @@ import { requireAdmin } from "@/app/lib/require-admin";
 
 const patchSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
-  slug: z
-    .string()
-    .trim()
-    .min(1)
-    .max(120)
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i, "invalid slug")
-    .optional(),
   body: z.string().optional(),
   status: z.enum(["DRAFT", "PUBLISHED"]).optional(),
+  authorDisplayName: z.string().trim().max(80).optional(),
 });
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -27,6 +23,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     where: { id },
     select: {
       id: true,
+      publicId: true,
       slug: true,
       title: true,
       body: true,
@@ -34,6 +31,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       publishedAt: true,
       updatedAt: true,
       createdAt: true,
+      authorEmail: true,
+      authorDisplayName: true,
     },
   });
 
@@ -52,19 +51,9 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: "invalid", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  if (parsed.data.slug) {
-    const exists = await prisma.story.findUnique({
-      where: { slug: parsed.data.slug },
-      select: { id: true },
-    });
-    if (exists && exists.id !== id) {
-      return NextResponse.json({ error: "slug_taken" }, { status: 409 });
-    }
-  }
-
   const existing = await prisma.story.findUnique({
     where: { id },
-    select: { publishedAt: true, status: true },
+    select: { publishedAt: true, status: true, publicId: true, authorEmail: true },
   });
   if (!existing) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
@@ -74,18 +63,38 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       ? existing.publishedAt ?? new Date()
       : null;
 
+  const email =
+    existing.authorEmail ??
+    (typeof admin.token?.email === "string" && admin.token.email.trim().length > 0
+      ? admin.token.email.trim()
+      : null);
+
   const story = await prisma.story.update({
     where: { id },
     data: {
       title: parsed.data.title,
-      slug: parsed.data.slug,
       body: parsed.data.body,
       status: parsed.data.status,
       publishedAt: parsed.data.status ? nextPublishedAt : undefined,
+      publicId: existing.publicId ?? randomUUID(),
+      authorEmail: email,
+      authorDisplayName: parsed.data.authorDisplayName,
     },
     select: { id: true },
   });
 
   return NextResponse.json({ id: story.id });
+}
+
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const admin = await requireAdmin(req);
+  if (!admin) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const { id } = await ctx.params;
+  const existing = await prisma.story.findUnique({ where: { id }, select: { id: true } });
+  if (!existing) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+  await prisma.story.delete({ where: { id } });
+  return NextResponse.json({ ok: true });
 }
 

@@ -15,20 +15,36 @@ type StoryItem = {
 export default function AdminList() {
   const [items, setItems] = useState<StoryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const load = () => {
+  const load = async () => {
     setError(null);
-    fetch("/api/admin/stories")
-      .then(async (r) => {
-        if (!r.ok) throw new Error(String(r.status));
-        return (await r.json()) as { stories: StoryItem[] };
-      })
-      .then((json) => setItems(json.stories))
-      .catch(() => setError("无回应。"));
+    try {
+      const r = await fetch("/api/admin/stories");
+      if (!r.ok) throw new Error(String(r.status));
+      const json = (await r.json()) as { stories: StoryItem[] };
+      setItems(json.stories);
+    } catch {
+      setError("无回应。");
+    }
+  };
+
+  const importFromFolder = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/admin/stories/import", { method: "POST" });
+      if (!res.ok) throw new Error();
+      await load();
+    } catch {
+      setError("无回应。");
+    } finally {
+      setBusy(false);
+    }
   };
 
   useEffect(() => {
-    load();
+    void load();
   }, []);
 
   const sorted = useMemo(() => items ?? [], [items]);
@@ -49,7 +65,22 @@ export default function AdminList() {
         </Link>
         <button
           type="button"
-          onClick={load}
+          disabled={busy}
+          onClick={() => void importFromFolder()}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 12,
+            border: "1px solid rgba(17,17,17,0.12)",
+            background: "transparent",
+            fontSize: 13,
+            cursor: busy ? "default" : "pointer",
+          }}
+        >
+          导入
+        </button>
+        <button
+          type="button"
+          onClick={() => void load()}
           style={{
             padding: "8px 12px",
             borderRadius: 12,

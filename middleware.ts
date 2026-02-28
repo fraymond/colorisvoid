@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const secret = process.env.NEXTAUTH_SECRET || process.env.AUTH_SECRET;
+const CANONICAL_HOST = "colorisvoid.com";
 
 function parseCsv(value: string | undefined): Set<string> {
   if (!value) return new Set();
@@ -45,6 +46,21 @@ function isAdminAllowedFromToken(token: any): boolean {
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const hostname = req.nextUrl.hostname;
+  const rawHost =
+    req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
+    req.headers.get("host")?.split(",")[0]?.trim() ||
+    hostname;
+
+  // Canonicalize host to avoid OAuth domain switching (www -> apex).
+  if (process.env.NODE_ENV === "production" && rawHost === `www.${CANONICAL_HOST}`) {
+    const url = req.nextUrl.clone();
+    url.hostname = CANONICAL_HOST;
+    url.protocol = "https:";
+    url.port = "";
+    return NextResponse.redirect(url, 308);
+  }
+
   const needsAdmin = pathname.startsWith("/stories/admin");
   if (!needsAdmin) return NextResponse.next();
 
@@ -53,7 +69,7 @@ export async function middleware(req: NextRequest) {
   if (!token || !isAdminAllowedFromToken(token)) {
     const url = req.nextUrl.clone();
     url.pathname = "/auth/signin";
-    url.searchParams.set("callbackUrl", req.nextUrl.pathname);
+    url.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
     return NextResponse.redirect(url);
   }
 
@@ -61,6 +77,6 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/stories/admin/:path*"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
 

@@ -10,7 +10,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 enum StoryStatus {
@@ -74,11 +76,15 @@ model VerificationToken {
 
 model Story {
   id          String      @id @default(cuid())
+  publicId    String?     @unique
   slug        String      @unique
   title       String
   body        String
   status      StoryStatus @default(DRAFT)
   publishedAt DateTime?
+
+  authorEmail       String?
+  authorDisplayName String?
 
   authorId String
   author   User @relation("StoryAuthor", fields: [authorId], references: [id], onDelete: Restrict)

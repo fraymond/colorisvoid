@@ -40,7 +40,7 @@ export default function RootLayout({
           </main>
           <footer className="siteFooter">
             <div className="container siteFooterInner">
-              <span className="footerText">Color is void. Void is color.</span>
+              <span className="footerText">Form appears. Meaning emerges.</span>
             </div>
           </footer>
         </div>

@@ -13,7 +13,7 @@ export default function Home() {
           priority
           sizes="(max-width: 720px) 200px, 260px"
         />
-        <div className="homeTagline muted">Color is void. Void is color.</div>
+        <div className="homeTagline muted">Form appears. Meaning emerges.</div>
       </section>
 
       <section id="preface" className="homePreface" aria-label="缘起">

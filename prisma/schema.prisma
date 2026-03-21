@@ -95,3 +95,95 @@ model Story {
   @@index([status, publishedAt])
   @@index([authorId])
 }
+
+model NewsItem {
+  id          String   @id @default(cuid())
+  sourceUrl   String   @unique
+  title       String
+  summary     String?
+  sourceName  String
+  publishedAt DateTime
+  fetchedAt   DateTime @default(now())
+
+  @@index([publishedAt])
+}
+
+model NewsDigest {
+  id        String   @id @default(cuid())
+  date      DateTime @unique
+  script    String
+  pickedIds String[]
+  createdAt DateTime @default(now())
+
+  feedbacks      NewsDigestFeedback[]
+  generationMeta NewsDigestGenerationMeta?
+}
+
+enum NewsDigestStyleRuleStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model NewsDigestFeedback {
+  id             String   @id @default(cuid())
+  digestId       String
+  createdBy      String
+  scoreOverall   Int
+  scoreHumor     Int
+  scoreHumanity  Int
+  scoreClarity   Int
+  scoreInsight   Int
+  bestLine       String
+  worstIssue     String
+  rewriteHint    String?
+  comment        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  digest NewsDigest @relation(fields: [digestId], references: [id], onDelete: Cascade)
+
+  @@unique([digestId, createdBy])
+  @@index([digestId, createdAt])
+  @@index([createdBy, createdAt])
+}
+
+model NewsDigestStyleRuleSet {
+  id                  String                    @id @default(cuid())
+  version             Int                       @unique
+  status              NewsDigestStyleRuleStatus @default(DRAFT)
+  title               String
+  sourceSummary       String
+  sourceFeedbackCount Int                       @default(0)
+  model               String?
+  moreToLeanInto      String[]
+  lessToAvoid         String[]
+  guardrails          String[]
+  exampleWins         String[]
+  exampleMisses       String[]
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  approvedAt          DateTime?
+  approvedBy          String?
+
+  generations NewsDigestGenerationMeta[]
+
+  @@index([status, createdAt])
+}
+
+model NewsDigestGenerationMeta {
+  id                    String   @id @default(cuid())
+  digestId              String   @unique
+  model                 String
+  basePromptVersion     String
+  ruleSetId             String?
+  ruleSetVersion        Int?
+  feedbackWindowSummary String?
+  createdAt             DateTime @default(now())
+
+  digest  NewsDigest              @relation(fields: [digestId], references: [id], onDelete: Cascade)
+  ruleSet NewsDigestStyleRuleSet? @relation(fields: [ruleSetId], references: [id], onDelete: SetNull)
+
+  @@index([ruleSetId, createdAt])
+}
+

@@ -13,6 +13,7 @@
     "@auth/prisma-adapter": "^2.11.1",
     "@prisma/adapter-pg": "^7.3.0",
     "@supabase/supabase-js": "^2.49.1",
+    "fast-xml-parser": "^5.5.5",
     "@prisma/client": "^7.3.0",
     "gray-matter": "^4.0.3",
     "next": "16.1.6",

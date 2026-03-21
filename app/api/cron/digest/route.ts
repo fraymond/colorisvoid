@@ -1,13 +1,22 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import OpenAI from "openai";
+import { z } from "zod";
 
 import {
+  buildDigestHashtags,
   buildFeedbackWindowSummary,
   composeDigestSystemPrompt,
   NEWS_DIGEST_BASE_PROMPT_VERSION,
+  parseJsonObjectFromText,
 } from "@/app/lib/news-digest";
 import { prisma } from "@/app/lib/prisma";
+
+const digestResponseSchema = z.object({
+  title: z.string().trim().min(1).max(140),
+  hashtags: z.array(z.string().trim().min(1).max(80)).min(3).max(12),
+  script: z.string().trim().min(1).max(4000),
+});
 
 function todayDate(): Date {
   const now = new Date();
@@ -126,20 +135,33 @@ export async function GET(req: NextRequest) {
       max_tokens: 2000,
     });
 
-    const script = completion.choices?.[0]?.message?.content ?? "";
-    if (!script.trim()) {
+    const content = completion.choices?.[0]?.message?.content ?? "";
+    if (!content.trim()) {
       return NextResponse.json({ ok: false, reason: "LLM returned empty" });
     }
+
+    const parsed = digestResponseSchema.safeParse(parseJsonObjectFromText(content));
+    if (!parsed.success) {
+      return NextResponse.json({ ok: false, reason: "LLM returned invalid digest payload" }, { status: 502 });
+    }
+
+    const digestTitle = parsed.data.title.trim();
+    const digestHashtags = buildDigestHashtags(parsed.data.hashtags);
+    const script = parsed.data.script.trim();
 
     const digest = await prisma.newsDigest.upsert({
       where: { date: targetDate },
       create: {
         date: targetDate,
-        script: script.trim(),
+        title: digestTitle,
+        hashtags: digestHashtags,
+        script,
         pickedIds: newsItems.slice(0, 5).map((n) => n.id),
       },
       update: {
-        script: script.trim(),
+        title: digestTitle,
+        hashtags: digestHashtags,
+        script,
         pickedIds: newsItems.slice(0, 5).map((n) => n.id),
       },
     });
@@ -163,7 +185,13 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({ ok: true, date: targetDate.toISOString(), length: script.length });
+    return NextResponse.json({
+      ok: true,
+      date: targetDate.toISOString(),
+      length: script.length,
+      title: digestTitle,
+      hashtags: digestHashtags,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("digest cron error:", err);

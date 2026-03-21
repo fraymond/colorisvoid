@@ -48,6 +48,33 @@ export default async function Page() {
               >
                 {formatDate(d.date)}
               </div>
+              {d.title ? (
+                <div
+                  style={{
+                    fontSize: 24,
+                    lineHeight: 1.3,
+                    marginBottom: 10,
+                  }}
+                >
+                  {d.title}
+                </div>
+              ) : null}
+              {d.hashtags.length ? (
+                <div
+                  className="muted"
+                  style={{
+                    fontSize: 13,
+                    marginBottom: 14,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 10,
+                  }}
+                >
+                  {d.hashtags.map((tag) => (
+                    <span key={tag}>{tag}</span>
+                  ))}
+                </div>
+              ) : null}
               <div
                 style={{
                   fontSize: 15,

@@ -66,6 +66,8 @@ export async function GET(req: NextRequest) {
     digests: digests.map((digest) => ({
       id: digest.id,
       date: digest.date.toISOString(),
+      title: digest.title,
+      hashtags: digest.hashtags,
       script: digest.script,
       pickedIds: digest.pickedIds,
       createdAt: digest.createdAt.toISOString(),

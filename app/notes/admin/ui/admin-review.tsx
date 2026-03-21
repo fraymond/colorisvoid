@@ -32,6 +32,8 @@ type GenerationMeta = {
 type Digest = {
   id: string;
   date: string;
+  title: string | null;
+  hashtags: string[];
   script: string;
   pickedIds: string[];
   createdAt: string;
@@ -253,6 +255,19 @@ function DigestCard(props: {
           <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
             {formatDate(props.digest.date)}
           </div>
+          {props.digest.title ? (
+            <div style={{ fontSize: 22, lineHeight: 1.3, marginBottom: 10 }}>{props.digest.title}</div>
+          ) : null}
+          {props.digest.hashtags.length ? (
+            <div
+              className="muted"
+              style={{ fontSize: 12, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8 }}
+            >
+              {props.digest.hashtags.map((tag) => (
+                <span key={tag}>{tag}</span>
+              ))}
+            </div>
+          ) : null}
           <div style={{ fontSize: 14, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{props.digest.script}</div>
         </div>
         <div

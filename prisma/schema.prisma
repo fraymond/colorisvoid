@@ -118,6 +118,8 @@ model NewsItem {
 model NewsDigest {
   id        String   @id @default(cuid())
   date      DateTime @unique
+  title     String?
+  hashtags  String[] @default([])
   script    String
   pickedIds String[]
   createdAt DateTime @default(now())

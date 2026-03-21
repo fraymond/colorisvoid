@@ -54,6 +54,9 @@ export default async function Page() {
   return (
     <section>
       <h1 className="pageTitle">顿悟</h1>
+      <div className="muted" style={{ marginBottom: 28 }}>
+        碳基文明的感悟文字
+      </div>
       {stories.length === 0 ? (
         <div className="muted">此处暂空。</div>
       ) : (

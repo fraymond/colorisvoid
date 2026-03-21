@@ -10,9 +10,7 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_DATABASE_URL")
+  provider = "postgresql"
 }
 
 enum StoryStatus {
@@ -95,7 +93,6 @@ model Story {
   @@index([status, publishedAt])
   @@index([authorId])
 }
-
 
 model ChatQuestion {
   id        String   @id @default(cuid())
@@ -196,4 +193,3 @@ model NewsDigestGenerationMeta {
 
   @@index([ruleSetId, createdAt])
 }
-

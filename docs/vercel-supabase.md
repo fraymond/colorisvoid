@@ -16,6 +16,16 @@ This project is designed for:
 3. Enable **Supabase Storage**; create a **public** bucket named `stories` for article images
 4. In Project Settings > API: copy `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (for server-side storage uploads)
 
+### Run setup script (one-time)
+
+After creating the Supabase project and setting env vars in `.env`:
+
+```bash
+npm run setup-supabase
+```
+
+This creates the `stories` bucket and applies all Prisma migrations.
+
 ## 2) Environment Variables
 
 Configure these in Vercel (Project Settings > Environment Variables):
@@ -26,6 +36,7 @@ Configure these in Vercel (Project Settings > Environment Variables):
 | `DIRECT_DATABASE_URL` | Supabase **Direct connection** URI (port 5432) |
 | `NEXTAUTH_URL` | `https://colorisvoid.com` |
 | `NEXTAUTH_SECRET` | Keep existing |
+| `AUTH_TRUST_HOST` | `true` (required for Vercel/proxy) |
 | `ADMIN_EMAILS` | Keep existing |
 | `ADMIN_EMAIL_DOMAIN` | Optional |
 | `ADMIN_WECHAT_OPENIDS` | Optional |
@@ -36,7 +47,8 @@ Configure these in Vercel (Project Settings > Environment Variables):
 | `FACEBOOK_CLIENT_SECRET` | Optional |
 | `WECHAT_CLIENT_ID` | Optional |
 | `WECHAT_CLIENT_SECRET` | Optional |
-| `OPENAI_API_KEY` | Keep existing |
+| `GROQ_API_KEY` | Free at [console.groq.com](https://console.groq.com); 问道 uses Groq first |
+| `OPENAI_API_KEY` | Optional fallback for 问道 |
 | `OPENAI_MODEL` | Optional |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |
@@ -69,17 +81,57 @@ Vercel runs `vercel-build` (defined in `package.json`) which executes `prisma mi
 3. Remove old Cloud Run A/CNAME records
 4. Vercel auto-provisions certs once DNS validates
 
-### OAuth Callback URLs
+### Google OAuth setup
 
-After domain migration, ensure OAuth providers allow `https://colorisvoid.com`:
+1. Go to [Google Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
+2. Select your OAuth 2.0 Client ID (or create one: **Create Credentials → OAuth client ID**)
+3. Under **Authorized JavaScript origins**, add:
+   - `https://colorisvoid.com`
+   - `https://www.colorisvoid.com` (if using www)
+4. Under **Authorized redirect URIs**, add:
+   - `https://colorisvoid.com/api/auth/callback/google`
+5. Save changes
 
-- **Google**: `https://colorisvoid.com/api/auth/callback/google`
-- **Meta/Facebook**: App Domains and Valid OAuth Redirect URIs
-- **WeChat**: `https://colorisvoid.com/api/auth/callback/wechat`
+### Other OAuth providers
 
-`NEXTAUTH_URL` must remain `https://colorisvoid.com` in Vercel env vars.
+- **Meta/Facebook**: App Domains and Valid OAuth Redirect URIs include `https://colorisvoid.com`
+- **WeChat**: OAuth redirect URL includes `https://colorisvoid.com/api/auth/callback/wechat`
 
-## 6) Existing GCS Images
+**Required Vercel env vars for auth:**
+- `NEXTAUTH_URL` = `https://colorisvoid.com`
+- `NEXTAUTH_SECRET` = your secret (generate with `openssl rand -base64 32`)
+- `GOOGLE_CLIENT_ID` = from Google Cloud Console
+- `GOOGLE_CLIENT_SECRET` = from Google Cloud Console
+
+## 6) Migrate data from Cloud SQL to Supabase
+
+If you have existing data in Google Cloud SQL:
+
+1. **Ensure gcloud auth** (one-time):
+   ```bash
+   gcloud auth application-default login
+   ```
+
+2. **Start Cloud SQL Proxy** (in a separate terminal):
+   ```bash
+   cloud-sql-proxy block-space-350920:us-central1:colorisvoid-db=tcp:5433
+   ```
+
+3. **Get Cloud SQL credentials** from Secret Manager:
+   ```bash
+   gcloud secrets versions access latest --secret=DATABASE_URL
+   ```
+   Convert the Unix socket URL to `postgresql://USER:PASSWORD@localhost:5433/colorisvoid` (replace `?host=/cloudsql/...` with `@localhost:5433`).
+
+4. **Set env and run migration**:
+   ```bash
+   export CLOUD_SQL_DATABASE_URL="postgresql://colorisvoid:PASSWORD@localhost:5433/colorisvoid?schema=public"
+   npm run migrate:cloudsql-to-supabase
+   ```
+
+This copies User, Account, Session, VerificationToken, and Story rows.
+
+## 7) Existing GCS Images
 
 Stories may reference `https://storage.googleapis.com/...` URLs:
 
@@ -88,7 +140,7 @@ Stories may reference `https://storage.googleapis.com/...` URLs:
 
 Recommend **A** for minimal migration.
 
-## Notes
+## 8) Notes
 
 - Admin access is controlled by allowlist env vars (`ADMIN_EMAILS`, `ADMIN_EMAIL_DOMAIN`, etc.)
 - OAuth provider setup requires proper callback URLs at the provider side (Google/Meta/WeChat).

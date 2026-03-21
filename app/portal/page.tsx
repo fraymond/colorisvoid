@@ -5,7 +5,7 @@ export const metadata = {
 };
 
 const links = [
-  { name: "GitHub", href: "https://github.com/" },
+  { name: "GitHub", href: "https://github.com/fraymond/colorisvoid/" },
 ];
 
 export default function Page() {
@@ -13,7 +13,7 @@ export default function Page() {
     <section>
       <h1 className="pageTitle">空门</h1>
       <div className="muted" style={{ marginBottom: 22 }}>
-        离开此地的通道。
+        一座数字时代的禅院。
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {links.map((l) => (

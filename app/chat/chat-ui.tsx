@@ -60,7 +60,7 @@ export default function ChatUi() {
             key={idx}
             style={{
               display: "flex",
-              justifyContent: m.role === "user" ? "flex-start" : "flex-end",
+              justifyContent: m.role === "user" ? "flex-end" : "flex-start",
             }}
           >
             <div

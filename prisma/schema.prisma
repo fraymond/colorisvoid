@@ -96,6 +96,16 @@ model Story {
   @@index([authorId])
 }
 
+
+model ChatQuestion {
+  id        String   @id @default(cuid())
+  question  String
+  response  String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 model NewsItem {
   id          String   @id @default(cuid())
   sourceUrl   String   @unique

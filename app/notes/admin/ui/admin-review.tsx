@@ -193,13 +193,15 @@ function RuleSetCard(props: {
       <div style={{ fontSize: 14, lineHeight: 1.8, marginTop: 14 }}>{props.ruleSet.sourceSummary}</div>
 
       <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
-        {[
-          ["多一点", props.ruleSet.moreToLeanInto],
-          ["少一点", props.ruleSet.lessToAvoid],
-          ["边界", props.ruleSet.guardrails],
-          ["推荐方向", props.ruleSet.exampleWins],
-          ["避免方向", props.ruleSet.exampleMisses],
-        ].map(([label, items]) =>
+        {(
+          [
+            ["多一点", props.ruleSet.moreToLeanInto],
+            ["少一点", props.ruleSet.lessToAvoid],
+            ["边界", props.ruleSet.guardrails],
+            ["推荐方向", props.ruleSet.exampleWins],
+            ["避免方向", props.ruleSet.exampleMisses],
+          ] as Array<[string, string[]]>
+        ).map(([label, items]) =>
           Array.isArray(items) && items.length ? (
             <div key={label}>
               <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>

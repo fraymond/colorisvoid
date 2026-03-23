@@ -113,10 +113,53 @@ def run_whisper_words(audio_path: str, model: str, lang: str) -> List[Dict]:
 
 
 STRIP_PUNCT = re.compile(r"[。，！？；：、…,.!?;:~～\-\—\"\"\'\']")
+HASHTAG_TOKEN = re.compile(r"#\S+")
 
 
 def strip_punct(text: str) -> str:
     return STRIP_PUNCT.sub("", text)
+
+
+def _looks_like_hashtag_line(line: str) -> bool:
+    tags = HASHTAG_TOKEN.findall(line)
+    if not tags:
+        return False
+    remainder = HASHTAG_TOKEN.sub("", line)
+    remainder = remainder.replace("｜", " ").replace("|", " ").replace("·", " ")
+    remainder = re.sub(r"[\s,，/、]+", "", remainder)
+    return remainder == ""
+
+
+def strip_digest_metadata_lines(lines: List[str]) -> List[str]:
+    """Remove title-ish and hashtag-only lines before subtitle alignment."""
+    cleaned = [line.strip() for line in lines if line.strip()]
+    if not cleaned:
+        return cleaned
+
+    if cleaned and re.match(r"^\d{4}年", cleaned[0]):
+        cleaned = cleaned[1:]
+
+    if not cleaned:
+        return cleaned
+
+    opener = "大家好，这里是献哥AI报道"
+
+    while cleaned and _looks_like_hashtag_line(cleaned[0]):
+        cleaned = cleaned[1:]
+
+    if not cleaned:
+        return cleaned
+
+    opener_idx = next((idx for idx, line in enumerate(cleaned) if opener in line), -1)
+
+    if opener_idx > 0:
+        cleaned = cleaned[opener_idx:]
+    elif len(cleaned) >= 2 and _looks_like_hashtag_line(cleaned[1]):
+        cleaned = cleaned[1:]
+        while cleaned and _looks_like_hashtag_line(cleaned[0]):
+            cleaned = cleaned[1:]
+
+    return cleaned
 
 
 def _is_english(ch: str) -> bool:
@@ -231,9 +274,7 @@ def fetch_latest_digest() -> Optional[str]:
     block = m.group(1)
     text = re.sub(r"<[^>]+>", "\n", block)
     text = html.unescape(text)
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    if lines and re.match(r"^\d{4}年", lines[0]):
-        lines = lines[1:]
+    lines = strip_digest_metadata_lines(text.split("\n"))
     return "\n".join(lines)
 
 
@@ -469,7 +510,7 @@ def process_video(video_path: str) -> None:
     if not script_text:
         log.error("No script found. Aborting.")
         return
-    script_lines = split_script_lines(script_text)
+    script_lines = split_script_lines("\n".join(strip_digest_metadata_lines(script_text.split("\n"))))
     log.info("      Got %d lines of script.", len(script_lines))
 
     # 2. Extract audio & transcribe with word-level timestamps

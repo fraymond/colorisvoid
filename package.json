@@ -10,7 +10,8 @@
     "vercel-build": "prisma migrate deploy && next build",
     "setup-supabase": "tsx scripts/setup-supabase.ts",
     "migrate:cloudsql-to-supabase": "tsx scripts/migrate-cloudsql-to-supabase.ts",
-    "resize": "tsx scripts/resize-images.ts"
+    "resize": "tsx scripts/resize-images.ts",
+    "xhs:publish": "tsx scripts/xiaohongshu-publish-playwright.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.1",
@@ -42,6 +43,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "playwright": "^1.58.2",
     "tsx": "^4.19.2",
     "typescript": "^5"
   }

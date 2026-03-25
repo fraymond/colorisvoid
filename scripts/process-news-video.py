@@ -114,6 +114,14 @@ def run_whisper_words(audio_path: str, model: str, lang: str) -> List[Dict]:
 
 STRIP_PUNCT = re.compile(r"[。，！？；：、…,.!?;:~～\-\—\"\"\'\']")
 HASHTAG_TOKEN = re.compile(r"#\S+")
+NUMBER_TOKEN = r"\d+(?:\.\d+)+(?:[%％])?"
+LATIN_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9&+._'/-]*$")
+DISPLAY_TOKEN = re.compile(rf"{NUMBER_TOKEN}|[A-Za-z0-9][A-Za-z0-9&+._'/-]*|.")
+MIXED_WORD_TOKEN = re.compile(rf"{NUMBER_TOKEN}|[A-Za-z0-9][A-Za-z0-9&+._'/-]*|[\u4e00-\u9fff]+|[^A-Za-z0-9\u4e00-\u9fff\s]")
+SCRIPT_TOKEN = re.compile(rf"{NUMBER_TOKEN}|[A-Za-z0-9][A-Za-z0-9&+._'/-]*|[\u4e00-\u9fff]+|\s+|.")
+ALL_PUNCT = set("。，！？；：、…,.!?;:")
+SENTENCE_END = set("。！？.!?")
+CLAUSE_PUNCT = set("，；：、…,:;")
 
 
 def strip_punct(text: str) -> str:
@@ -166,68 +174,525 @@ def _is_english(ch: str) -> bool:
     return ch.isascii() and ch.isalpha()
 
 
-def words_to_subtitle_segments(words: List[Dict], max_chars: int = 10,
-                               sentence_gap: float = 0.5,
-                               clause_gap: float = 0.25) -> List[Dict]:
-    """
-    Group words into subtitle segments. Rules:
-    - Break at ANY punctuation (each clause/sentence is its own segment).
-    - Force break when display length hits max_chars even without punctuation.
-    - Never split an English word across segments.
-    - Adds a timing gap after sentence-ending punctuation (。！？) so
-      consecutive subtitles don't run together visually.
-    - Adds a smaller gap after clause-level punctuation (，；：、…).
-    """
-    ALL_PUNCT = set("。，！？；：、…,.!?;:")
-    SENTENCE_END = set("。！？.!?")
+def _is_latin_token(text: str) -> bool:
+    return bool(text) and bool(LATIN_TOKEN.fullmatch(text))
 
-    segments: List[Dict] = []
-    buf_words: List[Dict] = []
-    buf_raw = ""
-    last_punct = ""
 
-    def flush():
-        nonlocal buf_words, buf_raw, last_punct
-        if not buf_words:
-            return
-        display = strip_punct(buf_raw).strip()
-        if display:
-            segments.append({
-                "start": buf_words[0]["start"],
-                "end": buf_words[-1]["end"],
-                "text": display,
-                "_punct": last_punct,
+def _join_display_tokens(tokens: List[str]) -> str:
+    out: List[str] = []
+    prev_latin = False
+    for token in tokens:
+        token_latin = _is_latin_token(token)
+        if out and prev_latin and token_latin:
+            out.append(" ")
+        out.append(token)
+        prev_latin = token_latin
+    return "".join(out)
+
+
+def _split_mixed_script_words(words: List[Dict]) -> List[Dict]:
+    split_words: List[Dict] = []
+    for word in words:
+        text = word["word"].strip()
+        if not text:
+            continue
+
+        raw_parts = MIXED_WORD_TOKEN.findall(text)
+        if len(raw_parts) <= 1:
+            split_words.append({
+                "start": word["start"],
+                "end": word["end"],
+                "word": text,
             })
-        buf_words = []
-        buf_raw = ""
-        last_punct = ""
+            continue
 
-    for w in words:
-        word_text = w["word"]
-        word_display = strip_punct(word_text)
-        cur_display_len = len(strip_punct(buf_raw))
-        new_display_len = cur_display_len + len(word_display)
+        parts: List[str] = []
+        for part in raw_parts:
+            if strip_punct(part):
+                parts.append(part)
+            elif parts:
+                parts[-1] += part
+            else:
+                parts.append(part)
 
-        # If adding this word would exceed max_chars and the word is English
-        # (or the buffer already has content), flush first to avoid splitting.
-        if buf_words and new_display_len > max_chars:
-            any_english = any(_is_english(ch) for ch in word_display)
-            if any_english or cur_display_len >= max_chars:
-                last_punct = ""
-                flush()
+        display_lengths = [max(len(strip_punct(part)), 1) for part in parts]
+        total_units = sum(display_lengths) or len(parts)
+        start = word["start"]
+        duration = max(word["end"] - word["start"], 0.0)
+        cursor = start
 
-        buf_words.append(w)
-        buf_raw += word_text
+        for idx, part in enumerate(parts):
+            piece_duration = duration * (display_lengths[idx] / total_units)
+            piece_end = word["end"] if idx == len(parts) - 1 else cursor + piece_duration
+            split_words.append({
+                "start": cursor,
+                "end": piece_end,
+                "word": part,
+            })
+            cursor = piece_end
 
-        trailing = buf_raw[-1] if buf_raw else ""
-        has_punct = trailing in ALL_PUNCT
-        display_len = len(strip_punct(buf_raw))
+    return split_words
 
-        if has_punct or display_len >= max_chars:
-            last_punct = trailing if has_punct else ""
-            flush()
 
-    flush()
+def _merge_latin_runs(words: List[Dict], max_gap: float = 0.18) -> List[Dict]:
+    merged: List[Dict] = []
+    for word in words:
+        text = word["word"].strip()
+        if not text:
+            continue
+
+        current = {
+            "start": word["start"],
+            "end": word["end"],
+            "word": text,
+        }
+        display = strip_punct(text)
+
+        if merged:
+            prev = merged[-1]
+            prev_display = strip_punct(prev["word"])
+            gap = max(current["start"] - prev["end"], 0.0)
+            prev_tail = prev["word"][-1] if prev["word"] else ""
+            if (
+                _is_latin_token(prev_display)
+                and _is_latin_token(display)
+                and prev_tail not in ALL_PUNCT
+                and gap <= max_gap
+            ):
+                prev["end"] = current["end"]
+                prev["word"] += f" {current['word']}"
+                continue
+
+        merged.append(current)
+    return merged
+
+
+def _subtitle_tokens(text: str) -> List[str]:
+    return [token for token in DISPLAY_TOKEN.findall(text) if token.strip()]
+
+
+def _token_units(prev_token: Optional[str], token: str) -> int:
+    extra_space = 1 if prev_token and _is_latin_token(prev_token) and _is_latin_token(token) else 0
+    token_units = len(strip_punct(token)) if _is_latin_token(token) else 1
+    return extra_space + token_units
+
+
+def _chunk_unit_total(tokens: List[str]) -> int:
+    total = 0
+    prev_token: Optional[str] = None
+    for token in tokens:
+        total += _token_units(prev_token, token)
+        prev_token = token
+    return total
+
+
+def _rebalance_tail_chunks(chunk_token_lists: List[List[str]], min_tail_units: int = 3) -> List[List[str]]:
+    if len(chunk_token_lists) < 2:
+        return chunk_token_lists
+
+    while len(chunk_token_lists) >= 2:
+        tail = chunk_token_lists[-1]
+        prev = chunk_token_lists[-2]
+        if _chunk_unit_total(tail) >= min_tail_units or len(prev) <= 1:
+            break
+
+        moved = prev.pop()
+        tail.insert(0, moved)
+
+        if not prev:
+            chunk_token_lists.pop(-2)
+            break
+
+    return chunk_token_lists
+
+
+def _split_overlong_segments(segments: List[Dict], max_units: int = 13) -> List[Dict]:
+    split_segments: List[Dict] = []
+
+    for seg in segments:
+        tokens = _subtitle_tokens(seg["text"])
+        if not tokens:
+            continue
+
+        chunk_token_lists: List[List[str]] = []
+        chunk_tokens: List[str] = []
+        chunk_units = 0
+
+        for token in tokens:
+            prev_token = chunk_tokens[-1] if chunk_tokens else None
+            next_units = _token_units(prev_token, token)
+            if chunk_tokens and chunk_units + next_units > max_units:
+                chunk_token_lists.append(chunk_tokens[:])
+                chunk_tokens = [token]
+                chunk_units = len(strip_punct(token)) if _is_latin_token(token) else 1
+                continue
+
+            chunk_tokens.append(token)
+            chunk_units += next_units
+
+        if chunk_tokens:
+            chunk_token_lists.append(chunk_tokens[:])
+
+        chunk_token_lists = _rebalance_tail_chunks(chunk_token_lists)
+        chunks = [_join_display_tokens(chunk).strip() for chunk in chunk_token_lists if chunk]
+
+        if len(chunks) == 1:
+            split_segments.append({
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": chunks[0],
+            })
+            continue
+
+        total_units = sum(max(len(strip_punct(chunk.replace(" ", ""))), 1) for chunk in chunks)
+        start = seg["start"]
+        duration = max(seg["end"] - seg["start"], 0.0)
+
+        for idx, chunk in enumerate(chunks):
+            chunk_weight = max(len(strip_punct(chunk.replace(" ", ""))), 1)
+            chunk_duration = duration * (chunk_weight / total_units)
+            chunk_end = seg["end"] if idx == len(chunks) - 1 else start + chunk_duration
+            split_segments.append({
+                "start": start,
+                "end": chunk_end,
+                "text": chunk,
+            })
+            start = chunk_end
+
+    return _normalize_segment_timing(split_segments)
+
+
+def _split_script_sentences(script: str) -> List[str]:
+    sentences: List[str] = []
+    current: List[str] = []
+    text = script.replace("\n", " ")
+
+    for idx, ch in enumerate(text):
+        current.append(ch)
+        if ch not in SENTENCE_END:
+            continue
+
+        prev_ch = text[idx - 1] if idx > 0 else ""
+        next_ch = text[idx + 1] if idx + 1 < len(text) else ""
+        if ch == "." and prev_ch.isdigit() and next_ch.isdigit():
+            continue
+
+        sentence = "".join(current).strip()
+        if sentence:
+            sentences.append(sentence)
+        current = []
+
+    tail = "".join(current).strip()
+    if tail:
+        sentences.append(tail)
+
+    return sentences
+
+
+def _script_sentence_specs(script: str) -> List[Dict]:
+    specs: List[Dict] = []
+    for raw_sentence in _split_script_sentences(script):
+        raw_sentence = raw_sentence.strip()
+        if not raw_sentence:
+            continue
+        punct = raw_sentence[-1] if raw_sentence[-1] in SENTENCE_END else ""
+        display = strip_punct(raw_sentence).replace(" ", "").strip()
+        if not display:
+            continue
+        specs.append({
+            "display_len": len(display),
+            "punct": punct,
+        })
+    return specs
+
+
+def _script_sentence_chunks(script: str) -> List[Dict]:
+    chunks: List[Dict] = []
+    for raw_sentence in _split_script_sentences(script):
+        raw_sentence = raw_sentence.strip()
+        if not raw_sentence:
+            continue
+
+        visible_parts: List[str] = []
+        compact_chars: List[str] = []
+        compact_to_visible: List[int] = []
+        clause_breaks = set()
+        protected_breaks = set()
+        visible_len = 0
+        tokens = SCRIPT_TOKEN.findall(raw_sentence)
+        for idx, token in enumerate(tokens):
+            if token.isspace():
+                prev_token = next((t for t in reversed(tokens[:idx]) if not t.isspace()), "")
+                next_token = next((t for t in tokens[idx + 1:] if not t.isspace()), "")
+                if _is_latin_token(prev_token) and _is_latin_token(next_token):
+                    visible_parts.append(" ")
+                    visible_len += 1
+                continue
+
+            if token in CLAUSE_PUNCT:
+                if compact_chars:
+                    clause_breaks.add(len(compact_chars))
+                continue
+            if token in SENTENCE_END:
+                continue
+
+            visible_parts.append(token)
+            token_compact_start = len(compact_chars)
+            for char_offset, ch in enumerate(token):
+                if ch.isspace() or not strip_punct(ch):
+                    continue
+                compact_chars.append(ch)
+                compact_to_visible.append(visible_len + char_offset)
+            token_compact_end = len(compact_chars)
+            if token_compact_end - token_compact_start > 1 and (
+                bool(re.fullmatch(NUMBER_TOKEN, token)) or _is_latin_token(strip_punct(token))
+            ):
+                for protected_idx in range(token_compact_start + 1, token_compact_end):
+                    protected_breaks.add(protected_idx)
+            visible_len += len(token)
+
+        if not compact_chars:
+            continue
+
+        chunks.append({
+            "visible_text": "".join(visible_parts),
+            "compact_text": "".join(compact_chars),
+            "compact_to_visible": compact_to_visible,
+            "clause_breaks": clause_breaks,
+            "protected_breaks": protected_breaks,
+            "punct": raw_sentence[-1] if raw_sentence[-1] in SENTENCE_END else "",
+        })
+    return chunks
+
+
+def _split_words_by_script_sentences(words: List[Dict], script: str) -> List[Dict]:
+    specs = _script_sentence_specs(script)
+    if not specs:
+        return [{"words": words, "punct": ""}] if words else []
+
+    sentences: List[Dict] = []
+    cursor = 0
+
+    for spec in specs:
+        buf: List[Dict] = []
+        consumed = 0
+        target_len = spec["display_len"]
+
+        while cursor < len(words):
+            word = words[cursor]
+            word_display = strip_punct(word["word"])
+            if not word_display:
+                cursor += 1
+                continue
+
+            if buf and consumed < target_len and consumed + len(word_display) > target_len:
+                overshoot = consumed + len(word_display) - target_len
+                undershoot = target_len - consumed
+                if undershoot < overshoot:
+                    break
+
+            buf.append(word)
+            consumed += len(word_display)
+            cursor += 1
+
+            if consumed >= target_len:
+                break
+
+        if buf:
+            sentences.append({
+                "words": buf,
+                "punct": spec["punct"],
+            })
+
+    if cursor < len(words):
+        leftovers = [word for word in words[cursor:] if strip_punct(word["word"])]
+        if leftovers:
+            if sentences:
+                sentences[-1]["words"].extend(leftovers)
+            else:
+                sentences.append({"words": leftovers, "punct": ""})
+
+    return sentences
+
+
+def _words_to_char_units(words: List[Dict]) -> List[Dict]:
+    char_units: List[Dict] = []
+    for word in _split_mixed_script_words(words):
+        display = strip_punct(word["word"])
+        if not display:
+            continue
+
+        duration = max(word["end"] - word["start"], 0.0)
+        total = max(len(display), 1)
+        cursor = word["start"]
+
+        for idx, ch in enumerate(display):
+            ch_duration = duration / total
+            ch_end = word["end"] if idx == total - 1 else cursor + ch_duration
+            char_units.append({
+                "char": ch,
+                "start": cursor,
+                "end": ch_end,
+            })
+            cursor = ch_end
+
+    return char_units
+
+
+def _map_script_chars_to_units(char_units: List[Dict], script_text: str) -> List[Optional[int]]:
+    corrected_chars = [unit["char"] for unit in char_units]
+    script_chars = list(script_text)
+    mapping: List[Optional[int]] = [None] * len(script_chars)
+
+    sm = difflib.SequenceMatcher(None, corrected_chars, script_chars, autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op not in {"equal", "replace"}:
+            continue
+        for offset in range(min(i2 - i1, j2 - j1)):
+            mapping[j1 + offset] = i1 + offset
+
+    prev: Optional[int] = None
+    for idx, mapped in enumerate(mapping):
+        if mapped is not None:
+            prev = mapped
+        elif prev is not None:
+            mapping[idx] = prev
+
+    nxt: Optional[int] = None
+    for idx in range(len(mapping) - 1, -1, -1):
+        mapped = mapping[idx]
+        if mapped is not None:
+            nxt = mapped
+        elif nxt is not None:
+            mapping[idx] = nxt
+
+    return mapping
+
+
+def _break_allowed(text: str, end_idx: int) -> bool:
+    if end_idx <= 0 or end_idx >= len(text):
+        return True
+    return not (_is_latin_token(text[end_idx - 1]) and _is_latin_token(text[end_idx]))
+
+
+def _find_segment_time(char_units: List[Dict], mapping: List[Optional[int]], start_idx: int, end_idx: int) -> Optional[Dict]:
+    indices = [idx for idx in mapping[start_idx:end_idx] if idx is not None]
+    if not indices:
+        return None
+    return {
+        "start": char_units[indices[0]]["start"],
+        "end": char_units[indices[-1]]["end"],
+    }
+
+
+def _normalize_segment_timing(segments: List[Dict], min_duration: float = 0.25) -> List[Dict]:
+    for idx, seg in enumerate(segments):
+        if seg["end"] <= seg["start"]:
+            seg["end"] = seg["start"] + 0.05
+
+        next_start = segments[idx + 1]["start"] if idx < len(segments) - 1 else None
+        if seg["end"] - seg["start"] < min_duration:
+            desired_end = seg["start"] + min_duration
+            if next_start is not None:
+                desired_end = min(desired_end, max(next_start - 0.01, seg["end"]))
+            seg["end"] = max(seg["end"], desired_end)
+
+    return segments
+
+
+def _script_based_subtitle_segments(char_units: List[Dict], script: str,
+                                    target_chars: int,
+                                    hard_chars: int,
+                                    min_chars: int,
+                                    sentence_gap: float,
+                                    clause_gap: float,
+                                    pause_gap: float,
+                                    soft_pause_gap: float) -> List[Dict]:
+    chunks = _script_sentence_chunks(script)
+    if not chunks or not char_units:
+        return []
+
+    full_script = "".join(chunk["compact_text"] for chunk in chunks)
+    mapping = _map_script_chars_to_units(char_units, full_script)
+    segments: List[Dict] = []
+    cursor = 0
+
+    for chunk in chunks:
+        text = chunk["compact_text"]
+        visible_text = chunk["visible_text"]
+        compact_to_visible = chunk["compact_to_visible"]
+        clause_breaks = chunk["clause_breaks"]
+        protected_breaks = chunk["protected_breaks"]
+        sentence_mapping = mapping[cursor:cursor + len(text)]
+        cursor += len(text)
+
+        start_idx = 0
+        while start_idx < len(text):
+            best_end: Optional[int] = None
+            best_punct = ""
+
+            for end_idx in range(start_idx + 1, len(text) + 1):
+                if end_idx in protected_breaks:
+                    continue
+                if not _break_allowed(text, end_idx):
+                    continue
+
+                seg_len = end_idx - start_idx
+                timing = _find_segment_time(char_units, sentence_mapping, start_idx, end_idx)
+                if timing is None:
+                    continue
+
+                next_gap = 0.0
+                if end_idx < len(text):
+                    prev_unit_idx = sentence_mapping[end_idx - 1]
+                    next_unit_idx = sentence_mapping[end_idx]
+                    if prev_unit_idx is not None and next_unit_idx is not None:
+                        next_gap = max(char_units[next_unit_idx]["start"] - char_units[prev_unit_idx]["end"], 0.0)
+
+                is_clause_break = end_idx in clause_breaks
+                is_sentence_end = end_idx == len(text)
+
+                if is_sentence_end:
+                    best_end = end_idx
+                    best_punct = chunk["punct"]
+                    break
+                if seg_len >= hard_chars:
+                    best_end = end_idx
+                    break
+                if is_clause_break and seg_len >= min_chars:
+                    best_end = end_idx
+                    best_punct = "，"
+                    break
+                if next_gap >= pause_gap and seg_len >= min_chars:
+                    best_end = end_idx
+                    break
+                if next_gap >= soft_pause_gap and seg_len >= target_chars:
+                    best_end = end_idx
+                    break
+
+            if best_end is None:
+                fallback_end = min(len(text), start_idx + hard_chars)
+                while fallback_end > start_idx and (
+                    fallback_end in protected_breaks or not _break_allowed(text, fallback_end)
+                ):
+                    fallback_end -= 1
+                best_end = fallback_end if fallback_end > start_idx else min(len(text), start_idx + 1)
+                best_punct = chunk["punct"] if best_end == len(text) else ""
+
+            timing = _find_segment_time(char_units, sentence_mapping, start_idx, best_end)
+            if timing is None:
+                start_idx = best_end
+                continue
+
+            segments.append({
+                "start": timing["start"],
+                "end": timing["end"],
+                "text": visible_text[
+                    compact_to_visible[start_idx]:compact_to_visible[best_end - 1] + 1
+                ].strip(),
+                "_punct": best_punct,
+            })
+            start_idx = best_end
 
     for i in range(len(segments) - 1):
         punct = segments[i].pop("_punct", "")
@@ -239,8 +704,141 @@ def words_to_subtitle_segments(words: List[Dict], max_chars: int = 10,
                 segments[i]["end"] -= actual_gap
     if segments:
         segments[-1].pop("_punct", "")
+    return _normalize_segment_timing(segments)
 
-    return segments
+
+def words_to_subtitle_segments(words: List[Dict], target_chars: int = 14,
+                               hard_chars: int = 18,
+                               min_chars: int = 3,
+                               sentence_gap: float = 0.5,
+                               clause_gap: float = 0.25,
+                               pause_gap: float = 0.35,
+                               soft_pause_gap: float = 0.18,
+                               script: Optional[str] = None) -> List[Dict]:
+    """
+    Group words into subtitle segments. Rules:
+    - Never let one subtitle segment cross a sentence boundary.
+    - Allow shorter subtitles when the spoken rhythm naturally pauses.
+    - Only split within the same sentence when a clause break, pause, or
+      length threshold suggests it.
+    - Keep contiguous English runs together before segmentation.
+    """
+    if script:
+        char_units = _words_to_char_units(words)
+        script_segments = _script_based_subtitle_segments(
+            char_units,
+            script,
+            target_chars=target_chars,
+            hard_chars=hard_chars,
+            min_chars=min_chars,
+            sentence_gap=sentence_gap,
+            clause_gap=clause_gap,
+            pause_gap=pause_gap,
+            soft_pause_gap=soft_pause_gap,
+        )
+        if script_segments:
+            return script_segments
+
+    merged_words = _merge_latin_runs(_split_mixed_script_words(words))
+    segments: List[Dict] = []
+
+    def flush_segment(buf_words: List[Dict], buf_raw: str, punct: str) -> None:
+        if not buf_words:
+            return
+        display = strip_punct(buf_raw).strip()
+        if display:
+            segments.append({
+                "start": buf_words[0]["start"],
+                "end": buf_words[-1]["end"],
+                "text": display,
+                "_punct": punct,
+            })
+
+    def flush_sentence(words_in_sentence: List[Dict], tail_punct: str) -> None:
+        if not words_in_sentence:
+            return
+
+        buf_words: List[Dict] = []
+        buf_raw = ""
+
+        for idx, word in enumerate(words_in_sentence):
+            word_text = word["word"]
+            word_display = strip_punct(word_text)
+            current_len = len(strip_punct(buf_raw))
+            projected_len = current_len + len(word_display)
+
+            if buf_words and projected_len > hard_chars:
+                flush_segment(buf_words, buf_raw, "")
+                buf_words = []
+                buf_raw = ""
+
+            buf_words.append(word)
+            buf_raw += word_text
+
+            trailing = buf_raw[-1] if buf_raw else ""
+            display_len = len(strip_punct(buf_raw))
+            next_gap = 0.0
+            if idx < len(words_in_sentence) - 1:
+                next_gap = max(words_in_sentence[idx + 1]["start"] - word["end"], 0.0)
+
+            is_clause_break = trailing in CLAUSE_PUNCT
+            is_pause_break = next_gap >= pause_gap
+            is_sentence_tail = idx == len(words_in_sentence) - 1
+
+            if is_sentence_tail:
+                flush_segment(buf_words, buf_raw, tail_punct if tail_punct in SENTENCE_END else "")
+                buf_words = []
+                buf_raw = ""
+                continue
+
+            if display_len < min_chars:
+                continue
+
+            if is_clause_break:
+                flush_segment(buf_words, buf_raw, trailing)
+                buf_words = []
+                buf_raw = ""
+                continue
+
+            if is_pause_break and display_len >= min_chars:
+                flush_segment(buf_words, buf_raw, "")
+                buf_words = []
+                buf_raw = ""
+                continue
+
+            if next_gap >= soft_pause_gap and display_len >= target_chars:
+                flush_segment(buf_words, buf_raw, "")
+                buf_words = []
+                buf_raw = ""
+
+        if buf_words:
+            flush_segment(buf_words, buf_raw, tail_punct if tail_punct in SENTENCE_END else "")
+
+    sentence_words: List[Dict] = []
+    sentence_punct = ""
+    for word in merged_words:
+        sentence_words.append(word)
+        trailing = word["word"][-1] if word["word"] else ""
+        if trailing in SENTENCE_END:
+            sentence_punct = trailing
+            flush_sentence(sentence_words, sentence_punct)
+            sentence_words = []
+            sentence_punct = ""
+
+    if sentence_words:
+        flush_sentence(sentence_words, sentence_punct)
+
+    for i in range(len(segments) - 1):
+        punct = segments[i].pop("_punct", "")
+        gap = sentence_gap if punct in SENTENCE_END else clause_gap if punct else 0.0
+        if gap > 0:
+            available = segments[i + 1]["start"] - segments[i]["end"]
+            actual_gap = min(gap, max(available, 0))
+            if actual_gap > 0:
+                segments[i]["end"] -= actual_gap
+    if segments:
+        segments[-1].pop("_punct", "")
+    return _normalize_segment_timing(segments)
 
 
 # ---------------------------------------------------------------------------
@@ -355,64 +953,36 @@ def burn_subtitles(
     video = VideoFileClip(video_path)
     w, h = video.size
 
-    active_size = max(34, int(h * 0.040))
-    context_size = max(28, int(h * 0.032))
-    max_width = int(w * 0.88)
-    line_spacing = int(active_size * 1.6)
-
-    # Vertical center of the 3-line subtitle block (lower third of screen)
-    block_center_y = int(h * 2 / 3)
-
-    # Colors
+    active_size = max(36, int(h * 0.042))
+    block_center_y = int(h * 0.72)
     ACTIVE_COLOR = "#FFFFFF"
-    CONTEXT_COLOR = "#888888"
 
     nonempty = [s for s in segments if s["text"].strip()]
 
     text_clips = []
-    for idx, seg in enumerate(nonempty):
+    for seg in nonempty:
         start = seg["start"]
         dur = seg["end"] - seg["start"]
         if dur <= 0:
             continue
 
-        lines_to_show = []
-        # Previous line (context above)
-        if idx > 0:
-            lines_to_show.append(("prev", nonempty[idx - 1]["text"].strip()))
-        else:
-            lines_to_show.append(("prev", ""))
-        # Current line (active / highlighted)
-        lines_to_show.append(("active", seg["text"].strip()))
-        # Next line (context below)
-        if idx < len(nonempty) - 1:
-            lines_to_show.append(("next", nonempty[idx + 1]["text"].strip()))
-        else:
-            lines_to_show.append(("next", ""))
-
-        for row, (role, txt) in enumerate(lines_to_show):
-            if not txt:
-                continue
-            is_active = role == "active"
-            y = block_center_y + (row - 1) * line_spacing
-
-            tc = (
-                TextClip(
-                    font=FONT,
-                    text=txt,
-                    font_size=active_size if is_active else context_size,
-                    color=ACTIVE_COLOR if is_active else CONTEXT_COLOR,
-                    stroke_color="black",
-                    stroke_width=2 if is_active else 1,
-                    method="label",
-                )
-                .with_position(("center", y))
-                .with_start(start)
-                .with_duration(dur)
+        tc = (
+            TextClip(
+                font=FONT,
+                text=seg["text"].strip(),
+                font_size=active_size,
+                color=ACTIVE_COLOR,
+                stroke_color="black",
+                stroke_width=2,
+                method="label",
             )
-            text_clips.append(tc)
+            .with_position(("center", block_center_y))
+            .with_start(start)
+            .with_duration(dur)
+        )
+        text_clips.append(tc)
 
-    log.info("Compositing %d subtitle clips (3-line highlight mode)...", len(text_clips))
+    log.info("Compositing %d subtitle clips (single-line mode)...", len(text_clips))
     final = CompositeVideoClip([video, *text_clips])
 
     tmp_path = output_path + ".tmp.mp4"
@@ -528,7 +1098,8 @@ def process_video(video_path: str) -> None:
         words = correct_words_with_script(words, "\n".join(script_lines))
 
     # 4. Build subtitle segments from words (precise timing per phrase)
-    segments = words_to_subtitle_segments(words)
+    segments = words_to_subtitle_segments(words, script="\n".join(script_lines) if script_lines else None)
+    segments = _split_overlong_segments(segments)
     log.info("      Built %d subtitle segments (punctuation stripped).", len(segments))
 
     # 5. Write SRT, burn subtitles, copy original to processed folder

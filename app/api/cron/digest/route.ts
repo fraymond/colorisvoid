@@ -13,7 +13,12 @@ import {
 import { prisma } from "@/app/lib/prisma";
 
 const digestResponseSchema = z.object({
-  title: z.string().trim().min(1).max(140),
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(140)
+    .refine((value) => Array.from(value).length < 20, "Title must be under 20 characters"),
   hashtags: z.array(z.string().trim().min(1).max(80)).min(3).max(12),
   script: z.string().trim().min(1).max(4000),
 });

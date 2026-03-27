@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "news:process-video": "python scripts/process-news-video.py",
+    "news:title-card": "python scripts/render_title_card_video.py",
     "vercel-build": "prisma migrate deploy && next build",
     "setup-supabase": "tsx scripts/setup-supabase.ts",
     "migrate:cloudsql-to-supabase": "tsx scripts/migrate-cloudsql-to-supabase.ts",

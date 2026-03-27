@@ -31,6 +31,13 @@ OUT_DIR = os.path.expanduser("~/Documents/AI_news_processed")
 LOG_FILE = os.path.join(OUT_DIR, "process.log")
 VIDEO_EXTS = {".mp4", ".mov", ".MP4", ".MOV"}
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_BEAUTY_FILTER = (
+    "hqdn3d=1.8:1.5:7.0:5.5,"
+    "eq=brightness=0.038:saturation=1.05:gamma=1.06:contrast=1.02"
+)
+DEFAULT_TITLE_CARD_TEXT = "献哥每日AI播报"
+DEFAULT_TITLE_CARD_DATE_TEMPLATE = "{year}年{month}月{day}日"
+DEFAULT_TITLE_CARD_SUFFIX = "cover_v5"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -935,6 +942,118 @@ def correct_words_with_script(words: List[Dict], script: str) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
+# Video beauty pre-pass
+# ---------------------------------------------------------------------------
+def beauty_enabled() -> bool:
+    raw = os.environ.get("NEWS_VIDEO_BEAUTY", "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def beauty_filter_spec() -> str:
+    override = os.environ.get("NEWS_VIDEO_BEAUTY_FILTER", "").strip()
+    return override or DEFAULT_BEAUTY_FILTER
+
+
+def apply_beauty_filter(video_path: str) -> str:
+    filter_spec = beauty_filter_spec()
+    fd, tmp_path = tempfile.mkstemp(prefix="beauty_", suffix=".mp4", dir=OUT_DIR)
+    os.close(fd)
+    os.unlink(tmp_path)
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        video_path,
+        "-vf",
+        filter_spec,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        tmp_path,
+    ]
+
+    started_at = time.time()
+    log.info("[beauty] Applying natural beauty pre-pass...")
+    log.info("[beauty] filter:v=%s", filter_spec)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        stderr = (exc.stderr or "").strip()
+        if stderr:
+            log.error("[beauty] ffmpeg failed: %s", stderr[-1200:])
+        raise
+
+    log.info("[beauty] Finished in %.1fs: %s", time.time() - started_at, tmp_path)
+    return tmp_path
+
+
+def title_card_enabled() -> bool:
+    raw = os.environ.get("NEWS_VIDEO_TITLE_CARD", "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning("Invalid %s=%r, using default %.3f", name, raw, default)
+        return default
+
+
+def title_card_text() -> str:
+    return os.environ.get("NEWS_VIDEO_TITLE_TEXT", "").strip() or DEFAULT_TITLE_CARD_TEXT
+
+
+def title_card_date_text(reference_video_path: str) -> str:
+    explicit = os.environ.get("NEWS_VIDEO_TITLE_DATE_TEXT", "").strip()
+    if explicit:
+        return explicit
+
+    source = os.environ.get("NEWS_VIDEO_TITLE_DATE_SOURCE", "file-mtime").strip().lower()
+    if source == "now":
+        dt = datetime.utcnow()
+    else:
+        dt = datetime.utcfromtimestamp(os.path.getmtime(reference_video_path))
+
+    template = (
+        os.environ.get("NEWS_VIDEO_TITLE_DATE_TEMPLATE", "").strip()
+        or DEFAULT_TITLE_CARD_DATE_TEMPLATE
+    )
+    return template.format(year=dt.year, month=dt.month, day=dt.day)
+
+
+def title_card_title_y_ratio() -> float:
+    return _env_float("NEWS_VIDEO_TITLE_Y_RATIO", 0.25)
+
+
+def title_card_date_y_ratio() -> float:
+    return _env_float("NEWS_VIDEO_DATE_Y_RATIO", 0.75)
+
+
+def title_card_duration() -> float:
+    return _env_float("NEWS_VIDEO_TITLE_DURATION", 0.5)
+
+
+def title_card_suffix() -> str:
+    return os.environ.get("NEWS_VIDEO_TITLE_SUFFIX", "").strip() or DEFAULT_TITLE_CARD_SUFFIX
+
+
+# ---------------------------------------------------------------------------
 # Burn subtitles with moviepy
 # ---------------------------------------------------------------------------
 def burn_subtitles(
@@ -1066,94 +1185,135 @@ def find_companion_txt(video_path: str) -> Optional[str]:
 
 def process_video(video_path: str) -> None:
     log.info("=== Processing: %s ===", os.path.basename(video_path))
+    beauty_temp_path: Optional[str] = None
+    title_card_body_path: Optional[str] = None
 
-    # 1. Get script: from companion .txt if present, otherwise from website
-    txt_path = find_companion_txt(video_path)
-    if txt_path:
-        log.info("[1/6] Using companion txt: %s", os.path.basename(txt_path))
-        with open(txt_path, "r", encoding="utf-8") as f:
-            script_text = f.read().strip()
-    else:
-        log.info("[1/6] No .txt file found, fetching from colorisvoid.com/notes...")
-        script_text = fetch_latest_digest()
-
-    if not script_text:
-        log.error("No script found. Aborting.")
-        return
-    script_lines = split_script_lines("\n".join(strip_digest_metadata_lines(script_text.split("\n"))))
-    log.info("      Got %d lines of script.", len(script_lines))
-
-    # 2. Extract audio & transcribe with word-level timestamps
-    log.info("[2/6] Extracting audio...")
-    audio_path = extract_audio(video_path)
-
-    log.info("[3/6] Transcribing with Whisper (word-level timestamps)...")
-    words = run_whisper_words(audio_path, model="medium", lang="zh")
-    log.info("      Got %d words.", len(words))
-    os.unlink(audio_path)
-
-    # 3. Correct misrecognized characters using official script (timestamps unchanged)
-    if script_lines:
-        log.info("[4/6] Aligning Whisper text to official script (fixing wrong chars)...")
-        words = correct_words_with_script(words, "\n".join(script_lines))
-
-    # 4. Build subtitle segments from words (precise timing per phrase)
-    segments = words_to_subtitle_segments(words, script="\n".join(script_lines) if script_lines else None)
-    segments = _split_overlong_segments(segments)
-    log.info("      Built %d subtitle segments (punctuation stripped).", len(segments))
-
-    # 5. Write SRT, burn subtitles, copy original to processed folder
-    base, ext = os.path.splitext(os.path.basename(video_path))
-    out_name = f"{base}_processed{ext}"
-    out_path = os.path.join(OUT_DIR, out_name)
-    srt_path = os.path.join(OUT_DIR, f"{base}.srt")
-    original_copy_path = os.path.join(OUT_DIR, os.path.basename(video_path))
-
-    log.info("[5/6] Writing SRT + burning subtitles...")
-    write_srt(segments, srt_path)
-    log.info("      SRT: %s", srt_path)
-
-    burn_subtitles(video_path, segments, out_path)
-
-    # Copy original video to processed folder
-    shutil.copy2(video_path, original_copy_path)
-    log.info("      Original copied to: %s", original_copy_path)
-
-    # 6. Generate CapCut draft (optional, non-fatal)
-    log.info("[6/6] Generating CapCut draft...")
     try:
-        from generate_capcut_draft import generate_capcut_draft, detect_capcut_drafts_folder
-
-        drafts_folder = detect_capcut_drafts_folder()
-        if drafts_folder:
-            draft_path = generate_capcut_draft(
-                video_path=original_copy_path,
-                srt_path=srt_path,
-                title_text=f"献哥AI报道 {datetime.now().strftime('%Y.%m.%d')}",
-                draft_name=f"AI_news_{datetime.now().strftime('%Y%m%d')}_{base}",
-                sfx_dir=os.path.join(SCRIPT_DIR, "assets", "sfx"),
-                capcut_drafts_folder=drafts_folder,
-            )
-            log.info("      CapCut draft: %s", draft_path)
+        # 1. Get script: from companion .txt if present, otherwise from website
+        txt_path = find_companion_txt(video_path)
+        if txt_path:
+            log.info("[1/7] Using companion txt: %s", os.path.basename(txt_path))
+            with open(txt_path, "r", encoding="utf-8") as f:
+                script_text = f.read().strip()
         else:
-            log.warning("      CapCut drafts folder not found, skipping draft generation.")
-    except ImportError:
-        log.warning("      pycapcut not installed, skipping CapCut draft generation.")
-    except Exception:
-        log.exception("      CapCut draft generation failed (non-fatal).")
+            log.info("[1/7] No .txt file found, fetching from colorisvoid.com/notes...")
+            script_text = fetch_latest_digest()
 
-    # 7. Archive original from raw (and companion .txt if used)
-    archive_dir = os.path.join(RAW_DIR, "archive")
-    os.makedirs(archive_dir, exist_ok=True)
-    archive_path = unique_path(archive_dir, os.path.basename(video_path))
-    log.info("Archiving original to: %s", archive_path)
-    os.rename(video_path, archive_path)
-    if txt_path and os.path.isfile(txt_path):
-        txt_archive = unique_path(archive_dir, os.path.basename(txt_path))
-        os.rename(txt_path, txt_archive)
-        log.info("Archived txt to: %s", txt_archive)
+        if not script_text:
+            log.error("No script found. Aborting.")
+            return
+        script_lines = split_script_lines("\n".join(strip_digest_metadata_lines(script_text.split("\n"))))
+        log.info("      Got %d lines of script.", len(script_lines))
 
-    log.info("=== Done! Output: %s ===", out_path)
+        # 2. Extract audio & transcribe with word-level timestamps
+        log.info("[2/7] Extracting audio...")
+        audio_path = extract_audio(video_path)
+
+        log.info("[3/7] Transcribing with Whisper (word-level timestamps)...")
+        words = run_whisper_words(audio_path, model="medium", lang="zh")
+        log.info("      Got %d words.", len(words))
+        os.unlink(audio_path)
+
+        # 3. Correct misrecognized characters using official script (timestamps unchanged)
+        if script_lines:
+            log.info("[4/7] Aligning Whisper text to official script (fixing wrong chars)...")
+            words = correct_words_with_script(words, "\n".join(script_lines))
+
+        # 4. Build subtitle segments from words (precise timing per phrase)
+        segments = words_to_subtitle_segments(words, script="\n".join(script_lines) if script_lines else None)
+        segments = _split_overlong_segments(segments)
+        log.info("      Built %d subtitle segments (punctuation stripped).", len(segments))
+
+        # 5. Apply light beauty before subtitle burn so text stays crisp.
+        burn_input_path = video_path
+        if beauty_enabled():
+            log.info("[5/7] Applying light beauty pre-pass before subtitle burn...")
+            beauty_temp_path = apply_beauty_filter(video_path)
+            burn_input_path = beauty_temp_path
+        else:
+            log.info("[5/7] Beauty pre-pass disabled via NEWS_VIDEO_BEAUTY.")
+
+        # 6. Write SRT, burn subtitles, and optionally prepend a title card
+        base, ext = os.path.splitext(os.path.basename(video_path))
+        out_name = f"{base}_processed{ext}"
+        out_path = os.path.join(OUT_DIR, out_name)
+        srt_path = os.path.join(OUT_DIR, f"{base}.srt")
+        original_copy_path = os.path.join(OUT_DIR, os.path.basename(video_path))
+        burn_output_path = out_path
+        if title_card_enabled():
+            title_card_body_path = os.path.join(OUT_DIR, f"{base}_processed_body{ext}")
+            burn_output_path = title_card_body_path
+
+        log.info("[6/8] Writing SRT + burning subtitles...")
+        write_srt(segments, srt_path)
+        log.info("      SRT: %s", srt_path)
+
+        burn_subtitles(burn_input_path, segments, burn_output_path)
+
+        if title_card_enabled():
+            log.info("[7/8] Rendering title card intro...")
+            from render_title_card_video import render_title_card_video
+
+            render_title_card_video(
+                video_path=burn_output_path,
+                title_text=title_card_text(),
+                date_text=title_card_date_text(video_path),
+                title_y_ratio=title_card_title_y_ratio(),
+                date_y_ratio=title_card_date_y_ratio(),
+                intro_duration=title_card_duration(),
+                name_suffix=title_card_suffix(),
+                output_path=out_path,
+                artifact_base_path=out_path,
+            )
+        else:
+            log.info("[7/8] Title card disabled via NEWS_VIDEO_TITLE_CARD.")
+
+        # Copy original video to processed folder
+        shutil.copy2(video_path, original_copy_path)
+        log.info("      Original copied to: %s", original_copy_path)
+
+        # 8. Generate CapCut draft (optional, non-fatal)
+        log.info("[8/8] Generating CapCut draft...")
+        try:
+            from generate_capcut_draft import generate_capcut_draft, detect_capcut_drafts_folder
+
+            drafts_folder = detect_capcut_drafts_folder()
+            if drafts_folder:
+                draft_path = generate_capcut_draft(
+                    video_path=original_copy_path,
+                    srt_path=srt_path,
+                    title_text=f"献哥AI报道 {datetime.now().strftime('%Y.%m.%d')}",
+                    draft_name=f"AI_news_{datetime.now().strftime('%Y%m%d')}_{base}",
+                    sfx_dir=os.path.join(SCRIPT_DIR, "assets", "sfx"),
+                    capcut_drafts_folder=drafts_folder,
+                )
+                log.info("      CapCut draft: %s", draft_path)
+            else:
+                log.warning("      CapCut drafts folder not found, skipping draft generation.")
+        except ImportError:
+            log.warning("      pycapcut not installed, skipping CapCut draft generation.")
+        except Exception:
+            log.exception("      CapCut draft generation failed (non-fatal).")
+
+        # 8. Archive original from raw (and companion .txt if used)
+        archive_dir = os.path.join(RAW_DIR, "archive")
+        os.makedirs(archive_dir, exist_ok=True)
+        archive_path = unique_path(archive_dir, os.path.basename(video_path))
+        log.info("Archiving original to: %s", archive_path)
+        os.rename(video_path, archive_path)
+        if txt_path and os.path.isfile(txt_path):
+            txt_archive = unique_path(archive_dir, os.path.basename(txt_path))
+            os.rename(txt_path, txt_archive)
+            log.info("Archived txt to: %s", txt_archive)
+
+        log.info("=== Done! Output: %s ===", out_path)
+    finally:
+        if title_card_body_path and os.path.exists(title_card_body_path):
+            os.unlink(title_card_body_path)
+            log.info("[title-card] Removed temp file: %s", title_card_body_path)
+        if beauty_temp_path and os.path.exists(beauty_temp_path):
+            os.unlink(beauty_temp_path)
+            log.info("[beauty] Removed temp file: %s", beauty_temp_path)
 
 
 def main() -> None:

@@ -32,6 +32,11 @@ interface FeedItem {
   "dc:date"?: string;
 }
 
+type DigestTriggerResult =
+  | { ok: true; status: number; data: unknown }
+  | { ok: false; status: number; data: unknown }
+  | { ok: false; error: string };
+
 async function fetchFeed(
   url: string,
   sourceName: string
@@ -75,6 +80,38 @@ async function fetchFeed(
   return results;
 }
 
+async function triggerDigest(origin: string, authHeader: string | null): Promise<DigestTriggerResult> {
+  try {
+    const headers: HeadersInit = {};
+    if (authHeader) headers.authorization = authHeader;
+
+    const response = await fetch(`${origin}/api/cron/digest`, {
+      headers,
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        data,
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      data,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   if (
@@ -106,5 +143,11 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, inserted: totalInserted });
+  const digest = await triggerDigest(req.nextUrl.origin, authHeader);
+
+  return NextResponse.json({
+    ok: true,
+    inserted: totalInserted,
+    digest,
+  });
 }

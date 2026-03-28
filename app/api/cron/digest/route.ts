@@ -5,27 +5,42 @@ import { z } from "zod";
 
 import {
   buildDigestHashtags,
+  buildDigestScript,
   buildFeedbackWindowSummary,
+  compressDigestTitle,
   composeDigestSystemPrompt,
+  DIGEST_TARGET_NEWS_COUNT,
   NEWS_DIGEST_BASE_PROMPT_VERSION,
   parseJsonObjectFromText,
 } from "@/app/lib/news-digest";
 import { prisma } from "@/app/lib/prisma";
 
 const digestResponseSchema = z.object({
-  title: z
-    .string()
-    .trim()
-    .min(1)
-    .max(140)
-    .refine((value) => Array.from(value).length < 20, "Title must be under 20 characters"),
+  title: z.string().trim().min(1).max(140),
   hashtags: z.array(z.string().trim().min(1).max(80)).min(3).max(12),
-  script: z.string().trim().min(1).max(4000),
+  newsItems: z
+    .array(
+      z.object({
+        keyword: z.string().trim().min(1).max(80),
+        segment: z.string().trim().min(1).max(1500),
+      })
+    )
+    .min(1)
+    .max(DIGEST_TARGET_NEWS_COUNT),
+  observation: z.string().trim().min(1).max(600),
 });
 
 function todayDate(): Date {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function sameUtcDay(a: Date, b: Date): boolean {
+  return (
+    a.getUTCFullYear() === b.getUTCFullYear() &&
+    a.getUTCMonth() === b.getUTCMonth() &&
+    a.getUTCDate() === b.getUTCDate()
+  );
 }
 
 export async function GET(req: NextRequest) {
@@ -57,9 +72,13 @@ export async function GET(req: NextRequest) {
 
     const recentDigests = await prisma.newsDigest.findMany({
       where: { date: { gte: new Date(targetDate.getTime() - 7 * 24 * 60 * 60 * 1000) } },
-      select: { pickedIds: true },
+      select: { date: true, pickedIds: true },
     });
-    const usedIds = new Set(recentDigests.flatMap((d) => d.pickedIds));
+    const usedIds = new Set(
+      recentDigests
+        .filter((digest) => !sameUtcDay(digest.date, targetDate))
+        .flatMap((digest) => digest.pickedIds)
+    );
 
     const newsItems = (await prisma.newsItem.findMany({
       where: { publishedAt: { gte: threeDaysBefore } },
@@ -71,12 +90,20 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, reason: "no news in window" });
     }
 
-    const newsList = newsItems
+    const selectedNewsItems = newsItems.slice(0, Math.min(DIGEST_TARGET_NEWS_COUNT, newsItems.length));
+    const newsList = selectedNewsItems
       .map(
         (n, i) =>
           `${i + 1}. [${n.sourceName}] ${n.title}${n.summary ? "\n   " + n.summary.slice(0, 200) : ""}`
       )
       .join("\n");
+    const userPrompt = [
+      `今天必须严格写 ${selectedNewsItems.length} 条新闻。`,
+      `你必须完整覆盖下面这 ${selectedNewsItems.length} 条，不能省略，不能把两条并成一条。`,
+      `返回 JSON 时，newsItems 数组长度必须严格等于 ${selectedNewsItems.length}，并且顺序必须和输入新闻顺序一致。`,
+      "",
+      newsList,
+    ].join("\n");
 
     const client = new OpenAI({ apiKey });
     const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
@@ -130,29 +157,72 @@ export async function GET(req: NextRequest) {
       feedbackSummary,
     });
 
-    const completion = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: newsList },
-      ],
-      temperature: 0.7,
-      max_tokens: 2000,
-    });
+    let digestTitle = "";
+    let digestHashtags: string[] = [];
+    let script = "";
+    let lastFailure = "unknown";
+    let lastContent = "";
 
-    const content = completion.choices?.[0]?.message?.content ?? "";
-    if (!content.trim()) {
-      return NextResponse.json({ ok: false, reason: "LLM returned empty" });
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const completion = await client.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.7,
+        max_tokens: 2000,
+      });
+
+      const content = completion.choices?.[0]?.message?.content ?? "";
+      lastContent = content;
+      if (!content.trim()) {
+        lastFailure = "LLM returned empty";
+        continue;
+      }
+
+      let rawPayload: unknown;
+      try {
+        rawPayload = parseJsonObjectFromText(content);
+      } catch (error) {
+        lastFailure = error instanceof Error ? error.message : "Model did not return parsable JSON";
+        continue;
+      }
+
+      const parsed = digestResponseSchema.safeParse(rawPayload);
+      if (!parsed.success) {
+        lastFailure = parsed.error.issues.map((issue) => issue.message).join("; ");
+        continue;
+      }
+
+      if (parsed.data.newsItems.length !== selectedNewsItems.length) {
+        lastFailure = `Expected ${selectedNewsItems.length} newsItems, got ${parsed.data.newsItems.length}`;
+        continue;
+      }
+
+      const compressedTitle = compressDigestTitle(parsed.data.title);
+      if (!compressedTitle || Array.from(compressedTitle).length >= 20) {
+        lastFailure = "Title remained too long after compression";
+        continue;
+      }
+
+      digestTitle = compressedTitle;
+      digestHashtags = buildDigestHashtags(parsed.data.hashtags);
+      script = buildDigestScript(
+        parsed.data.newsItems.map((item) => item.segment),
+        parsed.data.observation
+      );
+      break;
     }
 
-    const parsed = digestResponseSchema.safeParse(parseJsonObjectFromText(content));
-    if (!parsed.success) {
+    if (!digestTitle || !script) {
+      console.error("digest cron invalid payload:", {
+        targetDate: targetDate.toISOString(),
+        lastFailure,
+        lastContent: lastContent.slice(0, 1200),
+      });
       return NextResponse.json({ ok: false, reason: "LLM returned invalid digest payload" }, { status: 502 });
     }
-
-    const digestTitle = parsed.data.title.trim();
-    const digestHashtags = buildDigestHashtags(parsed.data.hashtags);
-    const script = parsed.data.script.trim();
 
     const digest = await prisma.newsDigest.upsert({
       where: { date: targetDate },
@@ -161,13 +231,13 @@ export async function GET(req: NextRequest) {
         title: digestTitle,
         hashtags: digestHashtags,
         script,
-        pickedIds: newsItems.slice(0, 5).map((n) => n.id),
+        pickedIds: selectedNewsItems.map((n) => n.id),
       },
       update: {
         title: digestTitle,
         hashtags: digestHashtags,
         script,
-        pickedIds: newsItems.slice(0, 5).map((n) => n.id),
+        pickedIds: selectedNewsItems.map((n) => n.id),
       },
     });
 

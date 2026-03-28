@@ -126,9 +126,12 @@ export async function POST(req: NextRequest) {
 
   const fetchRes = await fetch(`${origin}/api/cron/fetch-news`, { headers });
   const fetchData = await fetchRes.json();
-
-  const digestRes = await fetch(`${origin}/api/cron/digest`, { headers });
-  const digestData = await digestRes.json();
+  const digestData =
+    fetchData &&
+    typeof fetchData === "object" &&
+    "digest" in fetchData
+      ? fetchData.digest
+      : null;
 
   return NextResponse.json({ fetch: fetchData, digest: digestData });
 }

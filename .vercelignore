@@ -1,0 +1,9 @@
+.git
+.next
+node_modules
+.playwright
+scripts/__pycache__
+**/__pycache__
+.cursor
+agent-transcripts
+mcps

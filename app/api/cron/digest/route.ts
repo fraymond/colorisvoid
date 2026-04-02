@@ -9,11 +9,15 @@ import {
   buildFeedbackWindowSummary,
   compressDigestTitle,
   composeDigestSystemPrompt,
+  DIGEST_OBSERVATION_CHAR_LIMIT,
+  DIGEST_SEGMENT_CHAR_LIMIT,
   DIGEST_TARGET_NEWS_COUNT,
   NEWS_DIGEST_BASE_PROMPT_VERSION,
   parseJsonObjectFromText,
 } from "@/app/lib/news-digest";
 import { prisma } from "@/app/lib/prisma";
+
+export const dynamic = "force-dynamic";
 
 const digestResponseSchema = z.object({
   title: z.string().trim().min(1).max(140),
@@ -22,13 +26,24 @@ const digestResponseSchema = z.object({
     .array(
       z.object({
         keyword: z.string().trim().min(1).max(80),
-        segment: z.string().trim().min(1).max(1500),
+        segment: z.string().trim().min(1).max(500),
       })
     )
     .min(1)
     .max(DIGEST_TARGET_NEWS_COUNT),
-  observation: z.string().trim().min(1).max(600),
+  observation: z.string().trim().min(1).max(200),
 });
+
+function charCount(value: string): number {
+  return Array.from(value.trim()).length;
+}
+
+function sentenceCount(value: string): number {
+  return value
+    .split(/[。！？!?]/)
+    .map((part) => part.trim())
+    .filter(Boolean).length;
+}
 
 function todayDate(): Date {
   const now = new Date();
@@ -197,6 +212,25 @@ export async function GET(req: NextRequest) {
 
       if (parsed.data.newsItems.length !== selectedNewsItems.length) {
         lastFailure = `Expected ${selectedNewsItems.length} newsItems, got ${parsed.data.newsItems.length}`;
+        continue;
+      }
+
+      const overlongSegment = parsed.data.newsItems.find((item) => {
+        const segment = item.segment.trim();
+        return charCount(segment) > DIGEST_SEGMENT_CHAR_LIMIT || sentenceCount(segment) > 5;
+      });
+      if (overlongSegment) {
+        lastFailure = `Segment too long or too dense: ${overlongSegment.keyword}`;
+        continue;
+      }
+
+      if (charCount(parsed.data.observation) > DIGEST_OBSERVATION_CHAR_LIMIT) {
+        lastFailure = "Observation too long";
+        continue;
+      }
+
+      if (sentenceCount(parsed.data.observation) > 2) {
+        lastFailure = "Observation must be one or two short sentences";
         continue;
       }
 

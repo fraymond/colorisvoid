@@ -145,3 +145,4 @@ Recommend **A** for minimal migration.
 - Admin access is controlled by allowlist env vars (`ADMIN_EMAILS`, `ADMIN_EMAIL_DOMAIN`, etc.)
 - OAuth provider setup requires proper callback URLs at the provider side (Google/Meta/WeChat).
 - Vercel preview deployments use `*.vercel.app`; canonical redirect applies only to `www.colorisvoid.com` → `colorisvoid.com`.
+- Prisma-managed tables are intended to stay server-only; see [`/Users/rfu/git/colorisvoid/docs/supabase-rls.md`](/Users/rfu/git/colorisvoid/docs/supabase-rls.md) for the RLS hardening policy.

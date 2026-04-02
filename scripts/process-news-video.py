@@ -8,6 +8,7 @@ Can be triggered by launchd or run manually.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import difflib
 import glob
 import html
@@ -21,7 +22,7 @@ import tempfile
 import time
 import urllib.request
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -31,13 +32,62 @@ OUT_DIR = os.path.expanduser("~/Documents/AI_news_processed")
 LOG_FILE = os.path.join(OUT_DIR, "process.log")
 VIDEO_EXTS = {".mp4", ".mov", ".MP4", ".MOV"}
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEBUG_LOG_PATH = "/Users/rfu/git/colorisvoid/.cursor/debug-e84eb1.log"
+DEBUG_SESSION_ID = "e84eb1"
 DEFAULT_BEAUTY_FILTER = (
     "hqdn3d=1.8:1.5:7.0:5.5,"
     "eq=brightness=0.038:saturation=1.05:gamma=1.06:contrast=1.02"
 )
-DEFAULT_TITLE_CARD_TEXT = "献哥每日AI播报"
-DEFAULT_TITLE_CARD_DATE_TEMPLATE = "{year}年{month}月{day}日"
-DEFAULT_TITLE_CARD_SUFFIX = "cover_v5"
+DEFAULT_SUBTITLE_STYLE = "wenyuan"
+DEFAULT_SUBTITLE_FONT_SIZE_RATIO = 0.042
+DEFAULT_SUBTITLE_Y_RATIO = 0.72
+DEFAULT_SUBTITLE_COLOR = "#FFFFFF"
+DEFAULT_SUBTITLE_STROKE_COLOR = "black"
+DEFAULT_SUBTITLE_STROKE_WIDTH = 2
+DEFAULT_SUBTITLE_MIN_FONT_SIZE = 36
+DEFAULT_SUBTITLE_BOX_PADDING_X = 26
+DEFAULT_SUBTITLE_BOX_PADDING_Y = 14
+DEFAULT_SUBTITLE_BOX_OPACITY = 0.42
+SUBTITLE_FONT_CANDIDATES = {
+    "auto": [
+        os.path.expanduser("~/Library/Fonts/WenYuanRoundedSCVF.otf"),
+        os.path.expanduser("~/Library/Fonts/ZCOOLKuaiLe-Regular.ttf"),
+        os.path.expanduser("~/Library/Fonts/NotoSansCJKsc-Bold.otf"),
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+    ],
+    "wenyuan": [
+        os.path.expanduser("~/Library/Fonts/WenYuanRoundedSCVF.otf"),
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+    ],
+    "zcool": [
+        os.path.expanduser("~/Library/Fonts/ZCOOLKuaiLe-Regular.ttf"),
+        os.path.expanduser("~/Library/Fonts/WenYuanRoundedSCVF.otf"),
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+    ],
+    "noto": [
+        os.path.expanduser("~/Library/Fonts/NotoSansCJKsc-Bold.otf"),
+        os.path.expanduser("~/Library/Fonts/WenYuanRoundedSCVF.otf"),
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+    ],
+    "stheiti": [
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        os.path.expanduser("~/Library/Fonts/WenYuanRoundedSCVF.otf"),
+    ],
+}
+SUBTITLE_STYLE_PRESETS = {
+    "wenyuan": {
+        "box_rgb": (210, 192, 120),
+        "box_opacity": 0.42,
+        "box_padding_x": 26,
+        "box_padding_y": 14,
+    },
+    "zcool": {
+        "box_rgb": (102, 128, 158),
+        "box_opacity": 0.44,
+        "box_padding_x": 28,
+        "box_padding_y": 16,
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -51,6 +101,53 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("news-video")
+CURRENT_DEBUG_RUN_ID: Optional[str] = None
+
+
+def _debug_preview(text: str, limit: int = 24) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    return compact if len(compact) <= limit else compact[:limit] + "..."
+
+
+def _append_debug_log(
+    *,
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: Dict,
+) -> None:
+    if not CURRENT_DEBUG_RUN_ID:
+        return
+    payload = {
+        "sessionId": DEBUG_SESSION_ID,
+        "runId": CURRENT_DEBUG_RUN_ID,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+@dataclass
+class SubtitleStyle:
+    font_key: str
+    font_path: str
+    color: str
+    stroke_color: str
+    stroke_width: int
+    font_size_ratio: float
+    min_font_size: int
+    y_ratio: float
+    box_rgb: Optional[Tuple[int, int, int]]
+    box_opacity: float
+    box_padding_x: int
+    box_padding_y: int
 
 # ---------------------------------------------------------------------------
 # Load OPENAI_API_KEY from env or dotenv files
@@ -342,6 +439,21 @@ def _split_overlong_segments(segments: List[Dict], max_units: int = 13) -> List[
 
         chunk_token_lists = _rebalance_tail_chunks(chunk_token_lists)
         chunks = [_join_display_tokens(chunk).strip() for chunk in chunk_token_lists if chunk]
+
+        if len(chunks) > 1:
+            # region agent log
+            _append_debug_log(
+                hypothesis_id="H2",
+                location="scripts/process-news-video.py:408",
+                message="overlong segment split",
+                data={
+                    "original": _debug_preview(seg["text"]),
+                    "originalUnits": _chunk_unit_total(tokens),
+                    "chunkCount": len(chunks),
+                    "chunks": [_debug_preview(chunk) for chunk in chunks],
+                },
+            )
+            # endregion
 
         if len(chunks) == 1:
             split_segments.append({
@@ -637,6 +749,7 @@ def _script_based_subtitle_segments(char_units: List[Dict], script: str,
         while start_idx < len(text):
             best_end: Optional[int] = None
             best_punct = ""
+            decision_reason = ""
 
             for end_idx in range(start_idx + 1, len(text) + 1):
                 if end_idx in protected_breaks:
@@ -662,19 +775,24 @@ def _script_based_subtitle_segments(char_units: List[Dict], script: str,
                 if is_sentence_end:
                     best_end = end_idx
                     best_punct = chunk["punct"]
+                    decision_reason = "sentence_end"
                     break
                 if seg_len >= hard_chars:
                     best_end = end_idx
+                    decision_reason = "hard_chars"
                     break
                 if is_clause_break and seg_len >= min_chars:
                     best_end = end_idx
                     best_punct = "，"
+                    decision_reason = "clause_break"
                     break
                 if next_gap >= pause_gap and seg_len >= min_chars:
                     best_end = end_idx
+                    decision_reason = "pause_gap"
                     break
                 if next_gap >= soft_pause_gap and seg_len >= target_chars:
                     best_end = end_idx
+                    decision_reason = "soft_pause_gap"
                     break
 
             if best_end is None:
@@ -685,11 +803,37 @@ def _script_based_subtitle_segments(char_units: List[Dict], script: str,
                     fallback_end -= 1
                 best_end = fallback_end if fallback_end > start_idx else min(len(text), start_idx + 1)
                 best_punct = chunk["punct"] if best_end == len(text) else ""
+                decision_reason = "fallback"
 
             timing = _find_segment_time(char_units, sentence_mapping, start_idx, best_end)
             if timing is None:
                 start_idx = best_end
                 continue
+
+            if decision_reason in {"hard_chars", "fallback"} or (
+                decision_reason == "sentence_end" and start_idx > 0
+            ):
+                # region agent log
+                _append_debug_log(
+                    hypothesis_id="H1,H3",
+                    location="scripts/process-news-video.py:753",
+                    message="script segment decision",
+                    data={
+                        "reason": decision_reason,
+                        "segLen": best_end - start_idx,
+                        "chunkLen": len(text),
+                        "startIdx": start_idx,
+                        "endIdx": best_end,
+                        "chunkPreview": _debug_preview(visible_text),
+                        "segmentPreview": _debug_preview(
+                            visible_text[
+                                compact_to_visible[start_idx]:compact_to_visible[best_end - 1] + 1
+                            ].strip()
+                        ),
+                        "chunkPunct": chunk["punct"],
+                    },
+                )
+                # endregion
 
             segments.append({
                 "start": timing["start"],
@@ -744,7 +888,34 @@ def words_to_subtitle_segments(words: List[Dict], target_chars: int = 14,
             soft_pause_gap=soft_pause_gap,
         )
         if script_segments:
+            # region agent log
+            _append_debug_log(
+                hypothesis_id="H3",
+                location="scripts/process-news-video.py:834",
+                message="script-based segmentation selected",
+                data={
+                    "wordCount": len(words),
+                    "charUnitCount": len(char_units),
+                    "segmentCount": len(script_segments),
+                    "sentenceCount": len(_split_script_sentences(script)),
+                    "firstSegments": [_debug_preview(seg["text"]) for seg in script_segments[:6]],
+                },
+            )
+            # endregion
             return script_segments
+
+        # region agent log
+        _append_debug_log(
+            hypothesis_id="H4",
+            location="scripts/process-news-video.py:847",
+            message="script-based segmentation empty, fallback to word mode",
+            data={
+                "wordCount": len(words),
+                "charUnitCount": len(char_units),
+                "sentenceCount": len(_split_script_sentences(script)),
+            },
+        )
+        # endregion
 
     merged_words = _merge_latin_runs(_split_mixed_script_words(words))
     segments: List[Dict] = []
@@ -845,6 +1016,19 @@ def words_to_subtitle_segments(words: List[Dict], target_chars: int = 14,
                 segments[i]["end"] -= actual_gap
     if segments:
         segments[-1].pop("_punct", "")
+    # region agent log
+    _append_debug_log(
+        hypothesis_id="H4",
+        location="scripts/process-news-video.py:946",
+        message="word-based segmentation selected",
+        data={
+            "wordCount": len(words),
+            "mergedWordCount": len(merged_words),
+            "segmentCount": len(segments),
+            "firstSegments": [_debug_preview(seg["text"]) for seg in segments[:6]],
+        },
+    )
+    # endregion
     return _normalize_segment_timing(segments)
 
 
@@ -999,11 +1183,6 @@ def apply_beauty_filter(video_path: str) -> str:
     return tmp_path
 
 
-def title_card_enabled() -> bool:
-    raw = os.environ.get("NEWS_VIDEO_TITLE_CARD", "1").strip().lower()
-    return raw not in {"0", "false", "off", "no"}
-
-
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -1015,42 +1194,95 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def title_card_text() -> str:
-    return os.environ.get("NEWS_VIDEO_TITLE_TEXT", "").strip() or DEFAULT_TITLE_CARD_TEXT
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("Invalid %s=%r, using default %d", name, raw, default)
+        return default
 
 
-def title_card_date_text(reference_video_path: str) -> str:
-    explicit = os.environ.get("NEWS_VIDEO_TITLE_DATE_TEXT", "").strip()
-    if explicit:
-        return explicit
-
-    source = os.environ.get("NEWS_VIDEO_TITLE_DATE_SOURCE", "file-mtime").strip().lower()
-    if source == "now":
-        dt = datetime.utcnow()
-    else:
-        dt = datetime.utcfromtimestamp(os.path.getmtime(reference_video_path))
-
-    template = (
-        os.environ.get("NEWS_VIDEO_TITLE_DATE_TEMPLATE", "").strip()
-        or DEFAULT_TITLE_CARD_DATE_TEMPLATE
+def subtitle_style_name(script_source_path: Optional[str] = None) -> str:
+    style = os.environ.get("NEWS_VIDEO_SUBTITLE_STYLE", "").strip().lower()
+    if not style:
+        source_name = os.path.basename(script_source_path or "").lower()
+        if "blue" in source_name:
+            return "zcool"
+        return DEFAULT_SUBTITLE_STYLE
+    if style in SUBTITLE_FONT_CANDIDATES:
+        return style
+    log.warning(
+        "Unknown NEWS_VIDEO_SUBTITLE_STYLE=%r, using default %s",
+        style,
+        DEFAULT_SUBTITLE_STYLE,
     )
-    return template.format(year=dt.year, month=dt.month, day=dt.day)
+    return DEFAULT_SUBTITLE_STYLE
 
 
-def title_card_title_y_ratio() -> float:
-    return _env_float("NEWS_VIDEO_TITLE_Y_RATIO", 0.25)
+def subtitle_font_candidates(style_name: str) -> List[str]:
+    candidates = SUBTITLE_FONT_CANDIDATES.get(style_name) or SUBTITLE_FONT_CANDIDATES[DEFAULT_SUBTITLE_STYLE]
+    return list(dict.fromkeys(candidates))
 
 
-def title_card_date_y_ratio() -> float:
-    return _env_float("NEWS_VIDEO_DATE_Y_RATIO", 0.75)
+def resolve_subtitle_font(style_name: str) -> str:
+    explicit = os.environ.get("NEWS_VIDEO_SUBTITLE_FONT", "").strip()
+    if explicit:
+        if os.path.isfile(os.path.expanduser(explicit)):
+            return os.path.expanduser(explicit)
+        log.warning("NEWS_VIDEO_SUBTITLE_FONT not found: %s", explicit)
+
+    for candidate in subtitle_font_candidates(style_name):
+        if os.path.isfile(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        "No usable subtitle font found. Checked: "
+        + ", ".join(subtitle_font_candidates(style_name))
+    )
 
 
-def title_card_duration() -> float:
-    return _env_float("NEWS_VIDEO_TITLE_DURATION", 0.5)
+def build_subtitle_style(script_source_path: Optional[str] = None) -> SubtitleStyle:
+    style_name = subtitle_style_name(script_source_path)
+    preset = SUBTITLE_STYLE_PRESETS.get(style_name, {})
+    return SubtitleStyle(
+        font_key=style_name,
+        font_path=resolve_subtitle_font(style_name),
+        color=os.environ.get("NEWS_VIDEO_SUBTITLE_COLOR", "").strip() or DEFAULT_SUBTITLE_COLOR,
+        stroke_color=(
+            os.environ.get("NEWS_VIDEO_SUBTITLE_STROKE_COLOR", "").strip()
+            or DEFAULT_SUBTITLE_STROKE_COLOR
+        ),
+        stroke_width=_env_int(
+            "NEWS_VIDEO_SUBTITLE_STROKE_WIDTH", DEFAULT_SUBTITLE_STROKE_WIDTH
+        ),
+        font_size_ratio=_env_float(
+            "NEWS_VIDEO_SUBTITLE_FONT_SIZE_RATIO", DEFAULT_SUBTITLE_FONT_SIZE_RATIO
+        ),
+        min_font_size=_env_int(
+            "NEWS_VIDEO_SUBTITLE_MIN_FONT_SIZE", DEFAULT_SUBTITLE_MIN_FONT_SIZE
+        ),
+        y_ratio=_env_float("NEWS_VIDEO_SUBTITLE_Y_RATIO", DEFAULT_SUBTITLE_Y_RATIO),
+        box_rgb=preset.get("box_rgb"),
+        box_opacity=_env_float(
+            "NEWS_VIDEO_SUBTITLE_BOX_OPACITY",
+            float(preset.get("box_opacity", DEFAULT_SUBTITLE_BOX_OPACITY)),
+        ),
+        box_padding_x=_env_int(
+            "NEWS_VIDEO_SUBTITLE_BOX_PADDING_X",
+            int(preset.get("box_padding_x", DEFAULT_SUBTITLE_BOX_PADDING_X)),
+        ),
+        box_padding_y=_env_int(
+            "NEWS_VIDEO_SUBTITLE_BOX_PADDING_Y",
+            int(preset.get("box_padding_y", DEFAULT_SUBTITLE_BOX_PADDING_Y)),
+        ),
+    )
 
 
-def title_card_suffix() -> str:
-    return os.environ.get("NEWS_VIDEO_TITLE_SUFFIX", "").strip() or DEFAULT_TITLE_CARD_SUFFIX
+def subtitle_font_label(font_path: str) -> str:
+    return os.path.splitext(os.path.basename(font_path))[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1060,25 +1292,29 @@ def burn_subtitles(
     video_path: str,
     segments: List[Dict],
     output_path: str,
+    style: Optional[SubtitleStyle] = None,
 ) -> None:
-    from moviepy import CompositeVideoClip, TextClip, VideoFileClip
+    from moviepy import ColorClip, CompositeVideoClip, TextClip, VideoFileClip
 
-    FONT = os.path.expanduser("~/Library/Fonts/WenYuanRoundedSCVF.otf")
-    FONT_FALLBACK = "/System/Library/Fonts/STHeiti Medium.ttc"
-    if not os.path.isfile(FONT):
-        FONT = FONT_FALLBACK
+    style = style or build_subtitle_style()
 
     log.info("Loading video: %s", video_path)
     video = VideoFileClip(video_path)
     w, h = video.size
 
-    active_size = max(36, int(h * 0.042))
-    block_center_y = int(h * 0.72)
-    ACTIVE_COLOR = "#FFFFFF"
+    active_size = max(style.min_font_size, int(h * style.font_size_ratio))
+    block_center_y = int(h * style.y_ratio)
+    log.info(
+        "Subtitle style: %s (%s), size=%d, y=%.3f",
+        style.font_key,
+        subtitle_font_label(style.font_path),
+        active_size,
+        style.y_ratio,
+    )
 
     nonempty = [s for s in segments if s["text"].strip()]
 
-    text_clips = []
+    overlay_clips = []
     for seg in nonempty:
         start = seg["start"]
         dur = seg["end"] - seg["start"]
@@ -1087,22 +1323,36 @@ def burn_subtitles(
 
         tc = (
             TextClip(
-                font=FONT,
+                font=style.font_path,
                 text=seg["text"].strip(),
                 font_size=active_size,
-                color=ACTIVE_COLOR,
-                stroke_color="black",
-                stroke_width=2,
+                color=style.color,
+                stroke_color=style.stroke_color,
+                stroke_width=style.stroke_width,
                 method="label",
             )
             .with_position(("center", block_center_y))
             .with_start(start)
             .with_duration(dur)
         )
-        text_clips.append(tc)
+        if style.box_rgb:
+            box_width = max(1, int(round(tc.w + style.box_padding_x * 2)))
+            box_height = max(1, int(round(tc.h + style.box_padding_y * 2)))
+            text_x = (w - tc.w) / 2
+            box_x = text_x - style.box_padding_x
+            box_y = block_center_y - style.box_padding_y
+            box_clip = (
+                ColorClip(size=(box_width, box_height), color=style.box_rgb)
+                .with_opacity(style.box_opacity)
+                .with_position((box_x, box_y))
+                .with_start(start)
+                .with_duration(dur)
+            )
+            overlay_clips.append(box_clip)
+        overlay_clips.append(tc)
 
-    log.info("Compositing %d subtitle clips (single-line mode)...", len(text_clips))
-    final = CompositeVideoClip([video, *text_clips])
+    log.info("Compositing %d subtitle clips (single-line mode)...", len(nonempty))
+    final = CompositeVideoClip([video, *overlay_clips])
 
     tmp_path = output_path + ".tmp.mp4"
     log.info("Writing subtitled video (original speed)...")
@@ -1184,9 +1434,10 @@ def find_companion_txt(video_path: str) -> Optional[str]:
 
 
 def process_video(video_path: str) -> None:
+    global CURRENT_DEBUG_RUN_ID
     log.info("=== Processing: %s ===", os.path.basename(video_path))
+    CURRENT_DEBUG_RUN_ID = f"seg-{int(time.time() * 1000)}"
     beauty_temp_path: Optional[str] = None
-    title_card_body_path: Optional[str] = None
 
     try:
         # 1. Get script: from companion .txt if present, otherwise from website
@@ -1203,6 +1454,12 @@ def process_video(video_path: str) -> None:
             log.error("No script found. Aborting.")
             return
         script_lines = split_script_lines("\n".join(strip_digest_metadata_lines(script_text.split("\n"))))
+        subtitle_style = build_subtitle_style(txt_path)
+        log.info(
+            "      Subtitle theme: %s (source=%s)",
+            subtitle_style.font_key,
+            os.path.basename(txt_path) if txt_path else "latest-digest",
+        )
         log.info("      Got %d lines of script.", len(script_lines))
 
         # 2. Extract audio & transcribe with word-level timestamps
@@ -1222,6 +1479,20 @@ def process_video(video_path: str) -> None:
         # 4. Build subtitle segments from words (precise timing per phrase)
         segments = words_to_subtitle_segments(words, script="\n".join(script_lines) if script_lines else None)
         segments = _split_overlong_segments(segments)
+        # region agent log
+        _append_debug_log(
+            hypothesis_id="H1,H2,H3,H4",
+            location="scripts/process-news-video.py:1522",
+            message="final subtitle segments before burn",
+            data={
+                "videoPath": os.path.basename(video_path),
+                "txtSource": os.path.basename(txt_path) if txt_path else None,
+                "scriptLineCount": len(script_lines),
+                "segmentCount": len(segments),
+                "segments": [_debug_preview(seg["text"]) for seg in segments[:10]],
+            },
+        )
+        # endregion
         log.info("      Built %d subtitle segments (punctuation stripped).", len(segments))
 
         # 5. Apply light beauty before subtitle burn so text stays crisp.
@@ -1233,40 +1504,19 @@ def process_video(video_path: str) -> None:
         else:
             log.info("[5/7] Beauty pre-pass disabled via NEWS_VIDEO_BEAUTY.")
 
-        # 6. Write SRT, burn subtitles, and optionally prepend a title card
+        # 6. Write SRT and burn subtitles only.
         base, ext = os.path.splitext(os.path.basename(video_path))
         out_name = f"{base}_processed{ext}"
         out_path = os.path.join(OUT_DIR, out_name)
         srt_path = os.path.join(OUT_DIR, f"{base}.srt")
         original_copy_path = os.path.join(OUT_DIR, os.path.basename(video_path))
-        burn_output_path = out_path
-        if title_card_enabled():
-            title_card_body_path = os.path.join(OUT_DIR, f"{base}_processed_body{ext}")
-            burn_output_path = title_card_body_path
 
         log.info("[6/8] Writing SRT + burning subtitles...")
         write_srt(segments, srt_path)
         log.info("      SRT: %s", srt_path)
 
-        burn_subtitles(burn_input_path, segments, burn_output_path)
-
-        if title_card_enabled():
-            log.info("[7/8] Rendering title card intro...")
-            from render_title_card_video import render_title_card_video
-
-            render_title_card_video(
-                video_path=burn_output_path,
-                title_text=title_card_text(),
-                date_text=title_card_date_text(video_path),
-                title_y_ratio=title_card_title_y_ratio(),
-                date_y_ratio=title_card_date_y_ratio(),
-                intro_duration=title_card_duration(),
-                name_suffix=title_card_suffix(),
-                output_path=out_path,
-                artifact_base_path=out_path,
-            )
-        else:
-            log.info("[7/8] Title card disabled via NEWS_VIDEO_TITLE_CARD.")
+        burn_subtitles(burn_input_path, segments, out_path, style=subtitle_style)
+        log.info("[7/8] Subtitle-only pipeline complete. Title card step skipped.")
 
         # Copy original video to processed folder
         shutil.copy2(video_path, original_copy_path)
@@ -1282,7 +1532,7 @@ def process_video(video_path: str) -> None:
                 draft_path = generate_capcut_draft(
                     video_path=original_copy_path,
                     srt_path=srt_path,
-                    title_text=f"献哥AI报道 {datetime.now().strftime('%Y.%m.%d')}",
+                    title_text="",
                     draft_name=f"AI_news_{datetime.now().strftime('%Y%m%d')}_{base}",
                     sfx_dir=os.path.join(SCRIPT_DIR, "assets", "sfx"),
                     capcut_drafts_folder=drafts_folder,
@@ -1308,9 +1558,7 @@ def process_video(video_path: str) -> None:
 
         log.info("=== Done! Output: %s ===", out_path)
     finally:
-        if title_card_body_path and os.path.exists(title_card_body_path):
-            os.unlink(title_card_body_path)
-            log.info("[title-card] Removed temp file: %s", title_card_body_path)
+        CURRENT_DEBUG_RUN_ID = None
         if beauty_temp_path and os.path.exists(beauty_temp_path):
             os.unlink(beauty_temp_path)
             log.info("[beauty] Removed temp file: %s", beauty_temp_path)

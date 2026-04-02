@@ -96,12 +96,11 @@ def generate_capcut_draft(
     width: int = 1080,
     height: int = 1920,
 ) -> str:
-    """Generate a CapCut draft project with video, subtitles, title, and SFX.
+    """Generate a CapCut draft project with video, subtitles, optional title, and SFX.
 
     Returns the path to the generated draft folder.
     """
-    if not title_text:
-        title_text = f"献哥AI报道 {datetime.now().strftime('%Y.%m.%d')}"
+    title_text = title_text.strip()
     if not draft_name:
         draft_name = f"AI_news_{datetime.now().strftime('%Y%m%d')}"
     if not sfx_dir:
@@ -132,7 +131,8 @@ def generate_capcut_draft(
 
     # --- Tracks ---
     script.add_track(cc.TrackType.video, "main_video")
-    script.add_track(cc.TrackType.text, "title")
+    if title_text:
+        script.add_track(cc.TrackType.text, "title")
     script.add_track(cc.TrackType.text, "sub_active", relative_index=1)
     script.add_track(cc.TrackType.audio, "sfx")
 
@@ -144,24 +144,25 @@ def generate_capcut_draft(
     script.add_segment(video_seg, "main_video")
     log.info("  Added video track: %s (%.1fs)", os.path.basename(video_path), video_duration_us / SEC)
 
-    # --- Title card ---
-    title_seg = cc.TextSegment(
-        title_text,
-        trange(0, title_dur_us),
-        font=TITLE_FONT,
-        style=cc.TextStyle(
-            size=12.0,
-            bold=True,
-            color=(1.0, 1.0, 1.0),
-            align=1,
-        ),
-        clip_settings=cc.ClipSettings(transform_y=0.0),
-        border=cc.TextBorder(color=(0.0, 0.0, 0.0), width=50.0, alpha=0.8),
-    )
-    title_seg.add_animation(cc.TextIntro.渐显)
-    title_seg.add_animation(cc.TextOutro.渐隐, duration=tim("0.5s"))
-    script.add_segment(title_seg, "title")
-    log.info("  Added title card: '%s' (%.1fs)", title_text, TITLE_DURATION_SEC)
+    # --- Title card (optional) ---
+    if title_text:
+        title_seg = cc.TextSegment(
+            title_text,
+            trange(0, title_dur_us),
+            font=TITLE_FONT,
+            style=cc.TextStyle(
+                size=12.0,
+                bold=True,
+                color=(1.0, 1.0, 1.0),
+                align=1,
+            ),
+            clip_settings=cc.ClipSettings(transform_y=0.0),
+            border=cc.TextBorder(color=(0.0, 0.0, 0.0), width=50.0, alpha=0.8),
+        )
+        title_seg.add_animation(cc.TextIntro.渐显)
+        title_seg.add_animation(cc.TextOutro.渐隐, duration=tim("0.5s"))
+        script.add_segment(title_seg, "title")
+        log.info("  Added title card: '%s' (%.1fs)", title_text, TITLE_DURATION_SEC)
 
     # --- Subtitles: single-line display ---
     srt_segments = parse_srt(srt_path)

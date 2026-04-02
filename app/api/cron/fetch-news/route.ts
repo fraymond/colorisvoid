@@ -4,6 +4,8 @@ import { XMLParser } from "fast-xml-parser";
 
 import { prisma } from "@/app/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
 const RSS_FEEDS = [
   { url: "https://planet-ai.net/rss.xml", name: "planet-ai" },
   {

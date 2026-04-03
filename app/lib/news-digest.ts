@@ -1,3 +1,6 @@
+import { prisma } from "./prisma";
+
+export const SYSTEM_PROMPT_SLUG_DIGEST = "ai-news-digest-base";
 export const NEWS_DIGEST_BASE_PROMPT_VERSION = "2026-03-28-v9";
 export const NEWS_DIGEST_FIXED_HASHTAGS = ["#科技新闻", "#前沿科技", "#献哥AI报道"];
 export const DIGEST_TARGET_NEWS_COUNT = 5;
@@ -342,11 +345,12 @@ export function formatRuleSetForPrompt(ruleSet: RuleSetPromptShape | null): stri
 }
 
 export function composeDigestSystemPrompt(input: {
+  basePrompt: string;
   activeRuleSet: RuleSetPromptShape | null;
   feedbackSummary: string | null;
 }): string {
   return [
-    NEWS_DIGEST_BASE_PROMPT,
+    input.basePrompt,
     formatRuleSetForPrompt(input.activeRuleSet),
     input.feedbackSummary,
     "请把整篇当成短视频口播，不要写成长说明文。能删的背景就删，能前置钩子就前置钩子。",
@@ -366,4 +370,11 @@ export function parseJsonObjectFromText(raw: string): unknown {
   }
 
   return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+}
+
+export async function getDigestBasePrompt(): Promise<string> {
+  const row = await prisma.systemPrompt.findUnique({
+    where: { slug: SYSTEM_PROMPT_SLUG_DIGEST },
+  });
+  return row?.content || NEWS_DIGEST_BASE_PROMPT;
 }

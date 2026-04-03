@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { XMLParser } from "fast-xml-parser";
+import OpenAI from "openai";
 
 import { prisma } from "@/app/lib/prisma";
 
@@ -145,11 +146,70 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const enriched = await enrichNewItems();
+
   const digest = await triggerDigest(req.nextUrl.origin, authHeader);
 
   return NextResponse.json({
     ok: true,
     inserted: totalInserted,
+    enriched,
     digest,
   });
+}
+
+const ENRICH_BATCH_SIZE = 10;
+
+async function enrichNewItems(): Promise<number> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return 0;
+
+  const items = await prisma.newsItem.findMany({
+    where: { enrichedSummary: null },
+    orderBy: { publishedAt: "desc" },
+    take: ENRICH_BATCH_SIZE,
+  });
+
+  if (items.length === 0) return 0;
+
+  const client = new OpenAI({ apiKey });
+  const model = process.env.OPENAI_MODEL_ENRICH || "gpt-5.4";
+  let count = 0;
+
+  for (const item of items) {
+    try {
+      const prompt = [
+        "You are a news research assistant. Given the headline and short blurb of a tech/AI news article, write a detailed English summary of approximately 200-250 words.",
+        "Cover: what happened, who is involved, why it matters, technical details if available, and potential impact.",
+        "Be factual and informative. Do not editorialize. Write in clear prose paragraphs, not bullet points.",
+        "",
+        `Headline: ${item.title}`,
+        `Source: ${item.sourceName}`,
+        `URL: ${item.sourceUrl}`,
+        item.summary ? `Blurb: ${item.summary}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      const completion = await client.chat.completions.create({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 600,
+      });
+
+      const content = completion.choices?.[0]?.message?.content?.trim();
+      if (content && content.length > 50) {
+        await prisma.newsItem.update({
+          where: { id: item.id },
+          data: { enrichedSummary: content },
+        });
+        count++;
+      }
+    } catch {
+      // skip failed items, will retry next run
+    }
+  }
+
+  return count;
 }

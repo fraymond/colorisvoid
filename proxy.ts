@@ -61,8 +61,12 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(url, 308);
   }
 
-  const needsAdmin = pathname.startsWith("/stories/admin");
+  const needsAdmin = pathname.startsWith("/stories/admin") || pathname.startsWith("/admin");
   if (!needsAdmin) return NextResponse.next();
+
+  if (process.env.NODE_ENV === "development" && process.env.BYPASS_AUTH === "true") {
+    return NextResponse.next();
+  }
 
   const token = await getToken({ req, secret });
 

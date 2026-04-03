@@ -29,6 +29,9 @@ model User {
   sessions Session[]
   stories  Story[]  @relation("StoryAuthor")
 
+  writingProfile UserWritingProfile?
+  topicSkills    UserTopicSkill[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -104,13 +107,14 @@ model ChatQuestion {
 }
 
 model NewsItem {
-  id          String   @id @default(cuid())
-  sourceUrl   String   @unique
-  title       String
-  summary     String?
-  sourceName  String
-  publishedAt DateTime
-  fetchedAt   DateTime @default(now())
+  id              String   @id @default(cuid())
+  sourceUrl       String   @unique
+  title           String
+  summary         String?
+  enrichedSummary String?
+  sourceName      String
+  publishedAt     DateTime
+  fetchedAt       DateTime @default(now())
 
   @@index([publishedAt])
 }
@@ -126,6 +130,7 @@ model NewsDigest {
 
   feedbacks      NewsDigestFeedback[]
   generationMeta NewsDigestGenerationMeta?
+  versions       NewsDigestVersion[]
 }
 
 enum NewsDigestStyleRuleStatus {
@@ -194,4 +199,84 @@ model NewsDigestGenerationMeta {
   ruleSet NewsDigestStyleRuleSet? @relation(fields: [ruleSetId], references: [id], onDelete: SetNull)
 
   @@index([ruleSetId, createdAt])
+}
+
+model Topic {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  icon        String?
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  topicSkills UserTopicSkill[]
+
+  @@index([active, sortOrder])
+}
+
+model UserWritingProfile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  content   String
+  format    String   @default("markdown")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserTopicSkill {
+  id        String   @id @default(cuid())
+  userId    String
+  topicId   String
+  content   String
+  format    String   @default("markdown")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([topicId])
+}
+
+model SystemPrompt {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  content   String
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
+
+enum DigestVersionStatus {
+  DRAFT
+  FINAL
+  PUBLISHED
+}
+
+model NewsDigestVersion {
+  id            String              @id @default(cuid())
+  digestId      String
+  version       Int
+  title         String?
+  hashtags      String[]            @default([])
+  script        String
+  status        DigestVersionStatus @default(DRAFT)
+  pickedIds     String[]
+  createdBy     String
+  rewriteNote   String?
+  model         String?
+  skillSnapshot String?
+  createdAt     DateTime            @default(now())
+
+  digest NewsDigest @relation(fields: [digestId], references: [id], onDelete: Cascade)
+
+  @@unique([digestId, version])
+  @@index([digestId, status])
+  @@index([createdBy, createdAt])
 }

@@ -12,6 +12,7 @@ import {
   DIGEST_OBSERVATION_CHAR_LIMIT,
   DIGEST_SEGMENT_CHAR_LIMIT,
   DIGEST_TARGET_NEWS_COUNT,
+  getDigestBasePrompt,
   NEWS_DIGEST_BASE_PROMPT_VERSION,
   parseJsonObjectFromText,
 } from "@/app/lib/news-digest";
@@ -122,7 +123,8 @@ export async function GET(req: NextRequest) {
 
     const client = new OpenAI({ apiKey });
     const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
-    const [activeRuleSet, recentFeedbacks] = await Promise.all([
+    const [basePrompt, activeRuleSet, recentFeedbacks] = await Promise.all([
+      getDigestBasePrompt(),
       prisma.newsDigestStyleRuleSet.findFirst({
         where: { status: "ACTIVE" },
         orderBy: { approvedAt: "desc" },
@@ -157,6 +159,7 @@ export async function GET(req: NextRequest) {
     );
 
     const systemPrompt = composeDigestSystemPrompt({
+      basePrompt,
       activeRuleSet: activeRuleSet
         ? {
             version: activeRuleSet.version,

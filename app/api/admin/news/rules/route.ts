@@ -99,12 +99,12 @@ export async function POST(req: NextRequest) {
     .join("\n\n");
 
   const client = new OpenAI({ apiKey });
-  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  const model = process.env.OPENAI_MODEL || "gpt-5.4";
 
   const completion = await client.chat.completions.create({
     model,
     temperature: 0.4,
-    max_tokens: 1400,
+    max_completion_tokens: 1400,
     messages: [
       {
         role: "system",

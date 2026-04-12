@@ -5,34 +5,32 @@ import { z } from "zod";
 
 import {
   buildDigestHashtags,
-  buildDigestScript,
   buildFeedbackWindowSummary,
   compressDigestTitle,
   composeDigestSystemPrompt,
-  DIGEST_OBSERVATION_CHAR_LIMIT,
   DIGEST_SEGMENT_CHAR_LIMIT,
   DIGEST_TARGET_NEWS_COUNT,
   getDigestBasePrompt,
   NEWS_DIGEST_BASE_PROMPT_VERSION,
   parseJsonObjectFromText,
 } from "@/app/lib/news-digest";
+import type { StoryShape } from "@/app/lib/news-digest";
 import { prisma } from "@/app/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
-const digestResponseSchema = z.object({
+const storySchema = z.object({
+  keyword: z.string().trim().min(1).max(80),
   title: z.string().trim().min(1).max(140),
+  copywriting: z.string().trim().min(1).max(200),
+  coverTitle: z.string().trim().min(1).max(30),
+  coverSubtitle: z.string().trim().min(1).max(60),
   hashtags: z.array(z.string().trim().min(1).max(80)).min(3).max(12),
-  newsItems: z
-    .array(
-      z.object({
-        keyword: z.string().trim().min(1).max(80),
-        segment: z.string().trim().min(1).max(500),
-      })
-    )
-    .min(1)
-    .max(DIGEST_TARGET_NEWS_COUNT),
-  observation: z.string().trim().min(1).max(200),
+  segment: z.string().trim().min(1).max(800),
+});
+
+const digestResponseSchema = z.object({
+  stories: z.array(storySchema).length(DIGEST_TARGET_NEWS_COUNT),
 });
 
 function charCount(value: string): number {
@@ -109,20 +107,23 @@ export async function GET(req: NextRequest) {
     const selectedNewsItems = newsItems.slice(0, Math.min(DIGEST_TARGET_NEWS_COUNT, newsItems.length));
     const newsList = selectedNewsItems
       .map(
-        (n, i) =>
-          `${i + 1}. [${n.sourceName}] ${n.title}${n.summary ? "\n   " + n.summary.slice(0, 200) : ""}`
+        (n, i) => {
+          const detail = (n as Record<string, unknown>).enrichedSummary as string | null;
+          const body = detail || n.summary;
+          return `${i + 1}. [${n.sourceName}] ${n.title}${body ? "\n   " + body.slice(0, 500) : ""}`;
+        }
       )
       .join("\n");
     const userPrompt = [
-      `今天必须严格写 ${selectedNewsItems.length} 条新闻。`,
-      `你必须完整覆盖下面这 ${selectedNewsItems.length} 条，不能省略，不能把两条并成一条。`,
-      `返回 JSON 时，newsItems 数组长度必须严格等于 ${selectedNewsItems.length}，并且顺序必须和输入新闻顺序一致。`,
+      `今天你要从下面的新闻素材里，写出 ${selectedNewsItems.length} 个独立的故事。`,
+      `每个故事必须包含：钩子 → 展开 → 高潮 → 有趣的收尾。`,
+      `返回 JSON 时，newsItems 数组长度必须严格等于 ${selectedNewsItems.length}。`,
       "",
       newsList,
     ].join("\n");
 
     const client = new OpenAI({ apiKey });
-    const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+    const model = process.env.OPENAI_MODEL || "gpt-5.4";
     const [basePrompt, activeRuleSet, recentFeedbacks] = await Promise.all([
       getDigestBasePrompt(),
       prisma.newsDigestStyleRuleSet.findFirst({
@@ -175,9 +176,7 @@ export async function GET(req: NextRequest) {
       feedbackSummary,
     });
 
-    let digestTitle = "";
-    let digestHashtags: string[] = [];
-    let script = "";
+    let validStories: StoryShape[] = [];
     let lastFailure = "unknown";
     let lastContent = "";
 
@@ -189,7 +188,7 @@ export async function GET(req: NextRequest) {
           { role: "user", content: userPrompt },
         ],
         temperature: 0.7,
-        max_tokens: 2000,
+        max_completion_tokens: 4000,
       });
 
       const content = completion.choices?.[0]?.message?.content ?? "";
@@ -213,46 +212,33 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
-      if (parsed.data.newsItems.length !== selectedNewsItems.length) {
-        lastFailure = `Expected ${selectedNewsItems.length} newsItems, got ${parsed.data.newsItems.length}`;
-        continue;
-      }
-
-      const overlongSegment = parsed.data.newsItems.find((item) => {
-        const segment = item.segment.trim();
-        return charCount(segment) > DIGEST_SEGMENT_CHAR_LIMIT || sentenceCount(segment) > 5;
+      const overlongStory = parsed.data.stories.find((s) => {
+        const seg = s.segment.trim();
+        return charCount(seg) > DIGEST_SEGMENT_CHAR_LIMIT || sentenceCount(seg) > 15;
       });
-      if (overlongSegment) {
-        lastFailure = `Segment too long or too dense: ${overlongSegment.keyword}`;
+      if (overlongStory) {
+        lastFailure = `Segment too long or too dense: ${overlongStory.keyword}`;
         continue;
       }
 
-      if (charCount(parsed.data.observation) > DIGEST_OBSERVATION_CHAR_LIMIT) {
-        lastFailure = "Observation too long";
+      const badTitle = parsed.data.stories.find((s) => {
+        const compressed = compressDigestTitle(s.title);
+        return !compressed || Array.from(compressed).length >= 20;
+      });
+      if (badTitle) {
+        lastFailure = `Story title too long: ${badTitle.keyword}`;
         continue;
       }
 
-      if (sentenceCount(parsed.data.observation) > 2) {
-        lastFailure = "Observation must be one or two short sentences";
-        continue;
-      }
-
-      const compressedTitle = compressDigestTitle(parsed.data.title);
-      if (!compressedTitle || Array.from(compressedTitle).length >= 20) {
-        lastFailure = "Title remained too long after compression";
-        continue;
-      }
-
-      digestTitle = compressedTitle;
-      digestHashtags = buildDigestHashtags(parsed.data.hashtags);
-      script = buildDigestScript(
-        parsed.data.newsItems.map((item) => item.segment),
-        parsed.data.observation
-      );
+      validStories = parsed.data.stories.map((s) => ({
+        ...s,
+        title: compressDigestTitle(s.title),
+        hashtags: buildDigestHashtags(s.hashtags),
+      }));
       break;
     }
 
-    if (!digestTitle || !script) {
+    if (validStories.length === 0) {
       console.error("digest cron invalid payload:", {
         targetDate: targetDate.toISOString(),
         lastFailure,
@@ -261,19 +247,30 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, reason: "LLM returned invalid digest payload" }, { status: 502 });
     }
 
+    const first = validStories[0];
+    const combinedScript = validStories.map((s) => s.segment.trim()).join("\n\n");
+
     const digest = await prisma.newsDigest.upsert({
       where: { date: targetDate },
       create: {
         date: targetDate,
-        title: digestTitle,
-        hashtags: digestHashtags,
-        script,
+        title: first.title,
+        copywriting: first.copywriting,
+        coverTitle: first.coverTitle,
+        coverSubtitle: first.coverSubtitle,
+        hashtags: first.hashtags,
+        script: combinedScript,
+        storiesJson: validStories,
         pickedIds: selectedNewsItems.map((n) => n.id),
       },
       update: {
-        title: digestTitle,
-        hashtags: digestHashtags,
-        script,
+        title: first.title,
+        copywriting: first.copywriting,
+        coverTitle: first.coverTitle,
+        coverSubtitle: first.coverSubtitle,
+        hashtags: first.hashtags,
+        script: combinedScript,
+        storiesJson: validStories,
         pickedIds: selectedNewsItems.map((n) => n.id),
       },
     });
@@ -300,9 +297,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       date: targetDate.toISOString(),
-      length: script.length,
-      title: digestTitle,
-      hashtags: digestHashtags,
+      stories: validStories,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

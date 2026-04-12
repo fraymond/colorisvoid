@@ -195,7 +195,7 @@ async function enrichNewItems(): Promise<number> {
         model,
         messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
-        max_tokens: 600,
+        max_completion_tokens: 600,
       });
 
       const content = completion.choices?.[0]?.message?.content?.trim();

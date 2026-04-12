@@ -120,13 +120,17 @@ model NewsItem {
 }
 
 model NewsDigest {
-  id        String   @id @default(cuid())
-  date      DateTime @unique
-  title     String?
-  hashtags  String[] @default([])
-  script    String
-  pickedIds String[]
-  createdAt DateTime @default(now())
+  id            String   @id @default(cuid())
+  date          DateTime @unique
+  title         String?
+  copywriting   String?
+  coverTitle    String?
+  coverSubtitle String?
+  hashtags      String[] @default([])
+  script        String
+  storiesJson   Json?
+  pickedIds     String[]
+  createdAt     DateTime @default(now())
 
   feedbacks      NewsDigestFeedback[]
   generationMeta NewsDigestGenerationMeta?

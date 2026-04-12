@@ -182,6 +182,13 @@ from subtitle_gen import (  # noqa: E402 – after sys.path fix
     extract_audio,
     write_srt,
 )
+from pathlib import Path
+from render_title_card_video import (  # noqa: E402
+    extract_first_frame,
+    render_story_cover,
+    create_intro_clip,
+    prepend_intro,
+)
 import shutil
 
 
@@ -1033,6 +1040,60 @@ def words_to_subtitle_segments(words: List[Dict], target_chars: int = 12,
 
 
 # ---------------------------------------------------------------------------
+# Fetch latest stories metadata from API
+# ---------------------------------------------------------------------------
+STORIES_API_URLS = [
+    "http://localhost:3099/api/stories/latest",
+    "https://colorisvoid.com/api/stories/latest",
+]
+
+
+def fetch_latest_stories() -> Optional[List[Dict]]:
+    """Fetch the latest storiesJson from the API (try local, then prod)."""
+    for url in STORIES_API_URLS:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "news-video-bot/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if data.get("ok") and data.get("stories"):
+                log.info("Fetched %d stories from %s", len(data["stories"]), url)
+                return data["stories"]
+        except Exception as e:
+            log.debug("Failed to fetch stories from %s: %s", url, e)
+    log.warning("Could not fetch stories from any API endpoint")
+    return None
+
+
+def match_story_to_text(stories: List[Dict], text: str) -> Optional[Dict]:
+    """Find the story whose segment best matches the given text."""
+    if not stories or not text:
+        return None
+    text_clean = re.sub(r"\s+", "", text)[:200]
+    best_story = None
+    best_ratio = 0.0
+    for story in stories:
+        seg_clean = re.sub(r"\s+", "", story.get("segment", ""))[:200]
+        ratio = difflib.SequenceMatcher(None, text_clean, seg_clean).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_story = story
+    if best_ratio > 0.3:
+        log.info("Matched story: %s (ratio=%.2f)", best_story.get("keyword"), best_ratio)
+        return best_story
+    return None
+
+
+def match_story_to_filename(stories: List[Dict], filename: str) -> Optional[Dict]:
+    """Match a story by keyword appearing in the filename (e.g. '2026-04-11-1-强化学习.txt')."""
+    for story in stories:
+        kw = story.get("keyword", "")
+        if kw and kw in filename:
+            log.info("Matched story by filename keyword: %s", kw)
+            return story
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Fetch latest digest from the website
 # ---------------------------------------------------------------------------
 def fetch_latest_digest() -> Optional[str]:
@@ -1516,14 +1577,53 @@ def process_video(video_path: str) -> None:
         log.info("      SRT: %s", srt_path)
 
         burn_subtitles(burn_input_path, segments, out_path, style=subtitle_style)
-        log.info("[7/8] Subtitle-only pipeline complete. Title card step skipped.")
+        log.info("[7/9] Subtitles burned.")
+
+        # 7b. Generate story cover and prepend as intro
+        stories = fetch_latest_stories()
+        story = None
+        if stories:
+            if txt_path:
+                story = match_story_to_filename(stories, os.path.basename(txt_path))
+            if not story:
+                story = match_story_to_text(stories, script_text)
+
+        if story and story.get("coverTitle"):
+            log.info("[7b/9] Generating story cover intro...")
+            cover_title = story["coverTitle"]
+            cover_subtitle = story.get("coverSubtitle", "")
+            first_frame_path = Path(OUT_DIR) / f"{base}_firstframe.png"
+            cover_image_path = Path(OUT_DIR) / f"{base}_cover.png"
+            intro_clip_path = Path(OUT_DIR) / f"{base}_intro.mp4"
+            final_with_intro = os.path.join(OUT_DIR, f"{base}_final{ext}")
+
+            extract_first_frame(Path(out_path), first_frame_path)
+            render_story_cover(
+                first_frame=first_frame_path,
+                output_path=cover_image_path,
+                cover_title=cover_title,
+                cover_subtitle=cover_subtitle,
+            )
+            log.info("      Cover image: %s", cover_image_path)
+
+            create_intro_clip(cover_image_path, intro_clip_path, duration=1.0)
+            prepend_intro(intro_clip_path, Path(out_path), Path(final_with_intro))
+
+            os.replace(final_with_intro, out_path)
+            log.info("      Story cover intro prepended to: %s", out_path)
+
+            for tmp in [first_frame_path, intro_clip_path]:
+                if tmp.exists():
+                    tmp.unlink()
+        else:
+            log.info("[7b/9] No story metadata found, skipping cover intro.")
 
         # Copy original video to processed folder
         shutil.copy2(video_path, original_copy_path)
-        log.info("      Original copied to: %s", original_copy_path)
+        log.info("[8/9] Original copied to: %s", original_copy_path)
 
-        # 8. Generate CapCut draft (optional, non-fatal)
-        log.info("[8/8] Generating CapCut draft...")
+        # 9. Generate CapCut draft (optional, non-fatal)
+        log.info("[9/9] Generating CapCut draft...")
         try:
             from generate_capcut_draft import generate_capcut_draft, detect_capcut_drafts_folder
 

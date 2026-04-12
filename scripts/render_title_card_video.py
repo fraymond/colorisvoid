@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont
 except ImportError as exc:  # pragma: no cover - runtime guidance
     raise SystemExit(
         "Pillow is required. Install it in the Python environment used to run this script."
@@ -207,6 +207,8 @@ def draw_text_layer(
     stroke_width: int,
     shadow_fill: tuple[int, int, int, int],
     shadow_offset: tuple[int, int],
+    align: str = "center",
+    margin_left: int = 0,
 ) -> Image.Image:
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -214,7 +216,18 @@ def draw_text_layer(
     bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
-    x = (base.size[0] - text_w) / 2
+    max_width = base.size[0] - margin_left * 2 if align == "left" else base.size[0] * 0.95
+    while text_w > max_width and font_size > 10:
+        font_size = int(font_size * 0.92)
+        font = ImageFont.truetype(font_path, font_size)
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+    if align == "left":
+        x = margin_left
+    else:
+        x = (base.size[0] - text_w) / 2
     y = center_y - text_h / 2
 
     draw.text(
@@ -276,6 +289,174 @@ def render_cover_image(
         shadow_offset=(0, max(4, int(height * 0.004))),
     )
     image.convert("RGB").save(output_path)
+
+
+STORY_COVER_FONT_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), "..", "fonts", "AaFengShenBangShu.ttf"),
+    os.path.expanduser("~/Library/Fonts/NotoSansCJKsc-Black.otf"),
+    os.path.expanduser("~/Library/Fonts/NotoSansCJKsc-Bold.otf"),
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+]
+
+STORY_BANNER_FONT_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), "..", "fonts", "ResourceHanRoundedSC-Bold.ttf"),
+    os.path.expanduser("~/Library/Fonts/NotoSansCJKsc-Bold.otf"),
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+]
+
+
+def _draw_highlight_banner(
+    base: Image.Image,
+    text: str,
+    font_path: str,
+    font_size: int,
+    center_y: int,
+    highlight_color: str = "#FFE135",
+    highlight_alpha: int = 160,
+    text_color: str = "#FFFFFF",
+    stroke_color: str = "#1E1E1E",
+    stroke_width: int = 4,
+    align: str = "center",
+    margin_left: int = 0,
+) -> Image.Image:
+    """Draw text with a semi-transparent highlight pill behind it."""
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font = ImageFont.truetype(font_path, font_size)
+
+    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    if align == "left":
+        x = margin_left
+    else:
+        x = (base.size[0] - text_w) / 2
+    y = center_y - text_h / 2
+
+    pad_x = int(font_size * 0.5)
+    pad_y = int(font_size * 0.25)
+    pill_left = x - pad_x
+    pill_top = y - pad_y
+    pill_right = x + text_w + pad_x
+    pill_bottom = y + text_h + pad_y
+    pill_radius = int((pill_bottom - pill_top) * 0.45)
+
+    hl_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    hl_draw = ImageDraw.Draw(hl_layer)
+    r, g, b = ImageColor.getrgb(highlight_color)
+    hl_draw.rounded_rectangle(
+        [pill_left, pill_top, pill_right, pill_bottom],
+        radius=pill_radius,
+        fill=(r, g, b, highlight_alpha),
+    )
+    hl_layer = hl_layer.filter(ImageFilter.GaussianBlur(radius=3))
+    base = Image.alpha_composite(base, hl_layer)
+
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    draw.text(
+        (x, y),
+        text,
+        font=font,
+        fill=text_color,
+        stroke_width=stroke_width,
+        stroke_fill=stroke_color,
+    )
+    return Image.alpha_composite(base, overlay)
+
+
+TITLE_BRIGHT_COLORS = [
+    "#FFE135",  # yellow
+    "#FF6B6B",  # coral red
+    "#4ECDC4",  # teal
+    "#FF8C42",  # orange
+    "#A8E6CF",  # mint green
+    "#FF69B4",  # hot pink
+    "#7EC8E3",  # sky blue
+    "#C9B1FF",  # lavender
+]
+
+
+def render_story_cover(
+    first_frame: Path,
+    output_path: Path,
+    cover_title: str,
+    cover_subtitle: str,
+    banner_text: str = "谁都听得懂的AI科技故事",
+    title_color: str = "",
+    font_override: str = "",
+    banner_font_override: str = "",
+) -> None:
+    """Render a story cover image:
+    - Top-left banner with 50% transparent background pill
+    - Title + subtitle centered, starting at 2/3 height
+    - Title color randomly picked from 8 bright colors
+    """
+    import random
+
+    image = Image.open(first_frame).convert("RGBA")
+    width, height = image.size
+
+    if not title_color:
+        title_color = random.choice(TITLE_BRIGHT_COLORS)
+
+    title_font_path = resolve_font(font_override, STORY_COVER_FONT_CANDIDATES, "story-title")
+    banner_font_path = resolve_font(banner_font_override, STORY_BANNER_FONT_CANDIDATES, "banner")
+
+    left_margin = int(width * 0.06)
+    banner_font_size = int(height * 0.042)
+    banner_y = int(height / 6)
+    image = draw_text_layer(
+        image,
+        text=banner_text,
+        font_path=banner_font_path,
+        font_size=banner_font_size,
+        center_y=banner_y,
+        fill="#7EC8E3",
+        stroke_fill="#1E1E1E",
+        stroke_width=max(3, int(height * 0.0025)),
+        shadow_fill=(0, 0, 0, 100),
+        shadow_offset=(0, max(3, int(height * 0.003))),
+        align="left",
+        margin_left=left_margin,
+    )
+
+    title_font_size = int(height * 0.075)
+    subtitle_font_size = int(height * 0.042)
+    stroke_w = max(7, int(height * 0.006))
+
+    three_quarters = int(height * 3 / 4)
+    title_y = three_quarters
+    subtitle_y = title_y + title_font_size // 2 + int(subtitle_font_size * 0.6) + subtitle_font_size // 2
+
+    image = draw_text_layer(
+        image,
+        text=cover_title,
+        font_path=title_font_path,
+        font_size=title_font_size,
+        center_y=title_y,
+        fill=title_color,
+        stroke_fill="#1E1E1E",
+        stroke_width=stroke_w,
+        shadow_fill=(0, 0, 0, 160),
+        shadow_offset=(0, max(5, int(height * 0.005))),
+    )
+
+    image = draw_text_layer(
+        image,
+        text=cover_subtitle,
+        font_path=title_font_path,
+        font_size=subtitle_font_size,
+        center_y=subtitle_y,
+        fill="#1E1E1E",
+        stroke_fill="#FFFFFF",
+        stroke_width=max(4, int(height * 0.003)),
+        shadow_fill=(0, 0, 0, 100),
+        shadow_offset=(0, max(3, int(height * 0.003))),
+    )
+
+    image.convert("RGB").save(output_path)
+    log.info("Story cover saved: %s", output_path)
 
 
 def create_intro_clip(cover_image: Path, output_path: Path, duration: float) -> None:
@@ -438,5 +619,46 @@ def main() -> None:
     )
 
 
+def story_cover_cli() -> None:
+    """CLI entry point for generating story cover images."""
+    parser = argparse.ArgumentParser(
+        description="Render a story cover image with banner, title, and subtitle."
+    )
+    parser.add_argument("image", help="Path to the background image (e.g. first frame)")
+    parser.add_argument("--cover-title", required=True, help="Main title (big text, vivid color)")
+    parser.add_argument("--cover-subtitle", required=True, help="Subtitle (smaller text, black)")
+    parser.add_argument("--banner", default="谁都听得懂的AI科技故事", help="Top banner text")
+    parser.add_argument("--title-color", default="#FFE135", help="Main title color (hex)")
+    parser.add_argument("--output", default="", help="Output image path (default: next to input)")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+
+    image_path = Path(args.image).expanduser().resolve()
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+
+    output = Path(args.output) if args.output else image_path.with_name(
+        f"{image_path.stem}_story_cover.png"
+    )
+
+    render_story_cover(
+        first_frame=image_path,
+        output_path=output,
+        cover_title=args.cover_title,
+        cover_subtitle=args.cover_subtitle,
+        banner_text=args.banner,
+        title_color=args.title_color,
+    )
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "story-cover":
+        sys.argv.pop(1)
+        story_cover_cli()
+    else:
+        main()

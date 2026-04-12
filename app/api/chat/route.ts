@@ -42,7 +42,7 @@ function getOpenAIClient(): { client: OpenAI; model: string } | null {
   if (openaiKey) {
     return {
       client: new OpenAI({ apiKey: openaiKey }),
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      model: process.env.OPENAI_MODEL || "gpt-5.4",
     };
   }
   return null;
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
         ...messages.map((m) => ({ role: m.role, content: m.content })),
       ],
       temperature: 0.7,
-      max_tokens: 220,
+      max_completion_tokens: 220,
     });
 
     const message = completion.choices?.[0]?.message?.content ?? "";

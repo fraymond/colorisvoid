@@ -5,13 +5,13 @@ import { z } from "zod";
 
 import {
   buildDigestHashtags,
-  buildDigestScript,
   compressDigestTitle,
   DIGEST_TARGET_NEWS_COUNT,
   getDigestBasePrompt,
   NEWS_DIGEST_BASE_PROMPT_VERSION,
   parseJsonObjectFromText,
 } from "@/app/lib/news-digest";
+import type { StoryShape } from "@/app/lib/news-digest";
 import { composeLayeredSystemPrompt } from "@/app/lib/prompt-composer";
 import { prisma } from "@/app/lib/prisma";
 import { requireAdmin } from "@/app/lib/require-admin";
@@ -28,19 +28,18 @@ const requestSchema = z.object({
   generateVersion: z.boolean().optional(),
 });
 
-const digestResponseSchema = z.object({
+const storySchema = z.object({
+  keyword: z.string().trim().min(1).max(80),
   title: z.string().trim().min(1).max(140),
+  copywriting: z.string().trim().min(1).max(200),
+  coverTitle: z.string().trim().min(1).max(30),
+  coverSubtitle: z.string().trim().min(1).max(60),
   hashtags: z.array(z.string().trim().min(1).max(80)).min(3).max(12),
-  newsItems: z
-    .array(
-      z.object({
-        keyword: z.string().trim().min(1).max(80),
-        segment: z.string().trim().min(1).max(500),
-      })
-    )
-    .min(1)
-    .max(DIGEST_TARGET_NEWS_COUNT),
-  observation: z.string().trim().min(1).max(200),
+  segment: z.string().trim().min(1).max(800),
+});
+
+const digestResponseSchema = z.object({
+  stories: z.array(storySchema).length(DIGEST_TARGET_NEWS_COUNT),
 });
 
 export async function POST(req: NextRequest) {
@@ -122,7 +121,7 @@ export async function POST(req: NextRequest) {
         baseSystemPrompt,
         "",
         "The user has been giving you feedback in a conversation. Now they want a final rewrite.",
-        "You MUST output a valid JSON object in the standard digest format (title, hashtags, newsItems, observation).",
+        "You MUST output a valid JSON object in the standard digest format (title, copywriting, coverTitle, coverSubtitle, hashtags, newsItems).",
         "Apply all the feedback from the conversation to produce the best possible version.",
         "",
         `## Selected news (${orderedNews.length} items)`,
@@ -146,7 +145,7 @@ export async function POST(req: NextRequest) {
       ].join("\n");
 
   const client = new OpenAI({ apiKey });
-  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  const model = process.env.OPENAI_MODEL || "gpt-5.4";
 
   const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
@@ -171,7 +170,7 @@ export async function POST(req: NextRequest) {
     model,
     messages: chatMessages,
     temperature: generateVersion ? 0.7 : 0.5,
-    max_tokens: generateVersion ? 2000 : 1000,
+    max_completion_tokens: generateVersion ? 2000 : 1000,
   });
 
   const content = completion.choices?.[0]?.message?.content?.trim() ?? "";
@@ -198,12 +197,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const compressed = compressDigestTitle(result.data.title);
-  const hashtags = buildDigestHashtags(result.data.hashtags);
-  const script = buildDigestScript(
-    result.data.newsItems.map((item) => item.segment),
-    result.data.observation
-  );
+  const validStories: StoryShape[] = result.data.stories.map((s) => ({
+    ...s,
+    title: compressDigestTitle(s.title) || s.title,
+    hashtags: buildDigestHashtags(s.hashtags),
+  }));
+
+  const first = validStories[0];
+  const combinedScript = validStories.map((s) => s.segment.trim()).join("\n\n");
 
   const maxVersion = await prisma.newsDigestVersion.findFirst({
     where: { digestId },
@@ -229,9 +230,9 @@ export async function POST(req: NextRequest) {
     data: {
       digestId,
       version: nextVersion,
-      title: compressed || result.data.title,
-      hashtags,
-      script,
+      title: first.title,
+      hashtags: first.hashtags,
+      script: combinedScript,
       pickedIds: newsItemIds,
       createdBy: admin.userId,
       rewriteNote: conversationSummary.slice(0, 500) || null,
@@ -242,6 +243,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     reply: content,
+    stories: validStories,
     version: {
       id: version.id,
       version: version.version,

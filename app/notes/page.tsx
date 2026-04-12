@@ -96,8 +96,8 @@ export default async function Page({
                               {story.title}
                             </div>
                             <DownloadScriptButton
-                              segment={story.segment}
-                              filename={`${d.date.toISOString().slice(0, 10)}-${i + 1}-${story.keyword}.txt`}
+                              story={story}
+                              filename={`${d.date.toISOString().slice(0, 10)}-${i + 1}-${story.keyword}.json`}
                             />
                           </div>
                           {story.coverTitle ? (

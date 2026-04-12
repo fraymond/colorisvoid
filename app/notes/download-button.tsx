@@ -1,16 +1,20 @@
 "use client";
 
+import type { StoryShape } from "@/app/lib/news-digest";
+
 export function DownloadScriptButton({
-  segment,
+  story,
   filename,
 }: {
-  segment: string;
+  story: StoryShape;
   filename: string;
 }) {
   return (
     <button
       onClick={() => {
-        const blob = new Blob([segment], { type: "text/plain;charset=utf-8" });
+        const blob = new Blob([JSON.stringify(story, null, 2)], {
+          type: "application/json;charset=utf-8",
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;

@@ -1477,15 +1477,28 @@ def wait_for_stable(path: str, interval: float = 2.0, checks: int = 3) -> bool:
 # ---------------------------------------------------------------------------
 # Main processing
 # ---------------------------------------------------------------------------
+def find_companion_json(video_path: str) -> Optional[str]:
+    """Look for a .json story file with the same base name or any lone .json in the folder."""
+    base = os.path.splitext(video_path)[0]
+    for ext in [".json", ".JSON"]:
+        candidate = base + ext
+        if os.path.isfile(candidate):
+            return candidate
+    folder = os.path.dirname(video_path)
+    jsons = [os.path.join(folder, f) for f in os.listdir(folder)
+             if f.lower().endswith(".json") and os.path.isfile(os.path.join(folder, f))]
+    if len(jsons) == 1:
+        return jsons[0]
+    return None
+
+
 def find_companion_txt(video_path: str) -> Optional[str]:
     """Look for a .txt file with the same base name or any lone .txt in the folder."""
     base = os.path.splitext(video_path)[0]
-    # Same name: video.MOV -> video.txt
     for ext in [".txt", ".TXT"]:
         candidate = base + ext
         if os.path.isfile(candidate):
             return candidate
-    # Any .txt file sitting in the same folder (not in archive)
     folder = os.path.dirname(video_path)
     txts = [os.path.join(folder, f) for f in os.listdir(folder)
             if f.lower().endswith(".txt") and os.path.isfile(os.path.join(folder, f))]
@@ -1501,25 +1514,36 @@ def process_video(video_path: str) -> None:
     beauty_temp_path: Optional[str] = None
 
     try:
-        # 1. Get script: from companion .txt if present, otherwise from website
-        txt_path = find_companion_txt(video_path)
-        if txt_path:
-            log.info("[1/7] Using companion txt: %s", os.path.basename(txt_path))
-            with open(txt_path, "r", encoding="utf-8") as f:
-                script_text = f.read().strip()
+        # 1. Get script: from companion .json / .txt if present, otherwise from website
+        json_path = find_companion_json(video_path)
+        txt_path: Optional[str] = None
+        story_from_json: Optional[Dict] = None
+
+        if json_path:
+            log.info("[1/7] Using companion json: %s", os.path.basename(json_path))
+            with open(json_path, "r", encoding="utf-8") as f:
+                story_from_json = json.load(f)
+            script_text = story_from_json.get("segment", "").strip()
         else:
-            log.info("[1/7] No .txt file found, fetching from colorisvoid.com/notes...")
-            script_text = fetch_latest_digest()
+            txt_path = find_companion_txt(video_path)
+            if txt_path:
+                log.info("[1/7] Using companion txt: %s", os.path.basename(txt_path))
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    script_text = f.read().strip()
+            else:
+                log.info("[1/7] No .json/.txt file found, fetching from colorisvoid.com/notes...")
+                script_text = fetch_latest_digest()
 
         if not script_text:
             log.error("No script found. Aborting.")
             return
         script_lines = split_script_lines("\n".join(strip_digest_metadata_lines(script_text.split("\n"))))
-        subtitle_style = build_subtitle_style(txt_path)
+        source_path = json_path or txt_path
+        subtitle_style = build_subtitle_style(source_path)
         log.info(
             "      Subtitle theme: %s (source=%s)",
             subtitle_style.font_key,
-            os.path.basename(txt_path) if txt_path else "latest-digest",
+            os.path.basename(source_path) if source_path else "latest-digest",
         )
         log.info("      Got %d lines of script.", len(script_lines))
 
@@ -1547,7 +1571,7 @@ def process_video(video_path: str) -> None:
             message="final subtitle segments before burn",
             data={
                 "videoPath": os.path.basename(video_path),
-                "txtSource": os.path.basename(txt_path) if txt_path else None,
+                "txtSource": os.path.basename(source_path) if source_path else None,
                 "scriptLineCount": len(script_lines),
                 "segmentCount": len(segments),
                 "segments": [_debug_preview(seg["text"]) for seg in segments[:10]],
@@ -1579,14 +1603,15 @@ def process_video(video_path: str) -> None:
         burn_subtitles(burn_input_path, segments, out_path, style=subtitle_style)
         log.info("[7/9] Subtitles burned.")
 
-        # 7b. Generate story cover and prepend as intro
-        stories = fetch_latest_stories()
-        story = None
-        if stories:
-            if txt_path:
-                story = match_story_to_filename(stories, os.path.basename(txt_path))
-            if not story:
-                story = match_story_to_text(stories, script_text)
+        # 7b. Resolve story metadata (from companion .json or API)
+        story = story_from_json
+        if not story:
+            stories = fetch_latest_stories()
+            if stories:
+                if source_path:
+                    story = match_story_to_filename(stories, os.path.basename(source_path))
+                if not story:
+                    story = match_story_to_text(stories, script_text)
 
         if story and story.get("coverTitle"):
             log.info("[7b/9] Generating story cover intro...")
@@ -1615,8 +1640,22 @@ def process_video(video_path: str) -> None:
             for tmp in [first_frame_path, intro_clip_path]:
                 if tmp.exists():
                     tmp.unlink()
+
+        if story:
+            meta_path = os.path.join(OUT_DIR, f"{base}_meta.json")
+            meta = {
+                "title": story.get("title", ""),
+                "copywriting": story.get("copywriting", ""),
+                "hashtags": story.get("hashtags", []),
+                "coverTitle": story.get("coverTitle", ""),
+                "coverSubtitle": story.get("coverSubtitle", ""),
+                "keyword": story.get("keyword", ""),
+            }
+            with open(meta_path, "w", encoding="utf-8") as mf:
+                json.dump(meta, mf, ensure_ascii=False, indent=2)
+            log.info("[7b/9] Publish metadata saved: %s", meta_path)
         else:
-            log.info("[7b/9] No story metadata found, skipping cover intro.")
+            log.info("[7b/9] No story metadata found, skipping cover intro and metadata.")
 
         # Copy original video to processed folder
         shutil.copy2(video_path, original_copy_path)
@@ -1645,16 +1684,17 @@ def process_video(video_path: str) -> None:
         except Exception:
             log.exception("      CapCut draft generation failed (non-fatal).")
 
-        # 8. Archive original from raw (and companion .txt if used)
+        # 8. Archive original from raw (and companion .json/.txt if used)
         archive_dir = os.path.join(RAW_DIR, "archive")
         os.makedirs(archive_dir, exist_ok=True)
         archive_path = unique_path(archive_dir, os.path.basename(video_path))
         log.info("Archiving original to: %s", archive_path)
         os.rename(video_path, archive_path)
-        if txt_path and os.path.isfile(txt_path):
-            txt_archive = unique_path(archive_dir, os.path.basename(txt_path))
-            os.rename(txt_path, txt_archive)
-            log.info("Archived txt to: %s", txt_archive)
+        for companion in [json_path, txt_path]:
+            if companion and os.path.isfile(companion):
+                comp_archive = unique_path(archive_dir, os.path.basename(companion))
+                os.rename(companion, comp_archive)
+                log.info("Archived companion to: %s", comp_archive)
 
         log.info("=== Done! Output: %s ===", out_path)
     finally:

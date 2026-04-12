@@ -43,7 +43,7 @@ DEFAULT_SUBTITLE_FONT_SIZE_RATIO = 0.042
 DEFAULT_SUBTITLE_Y_RATIO = 0.72
 DEFAULT_SUBTITLE_COLOR = "#FFFFFF"
 DEFAULT_SUBTITLE_STROKE_COLOR = "black"
-DEFAULT_SUBTITLE_STROKE_WIDTH = 2
+DEFAULT_SUBTITLE_STROKE_WIDTH = 4
 DEFAULT_SUBTITLE_MIN_FONT_SIZE = 36
 DEFAULT_SUBTITLE_BOX_PADDING_X = 26
 DEFAULT_SUBTITLE_BOX_PADDING_Y = 14
@@ -410,7 +410,7 @@ def _rebalance_tail_chunks(chunk_token_lists: List[List[str]], min_tail_units: i
     return chunk_token_lists
 
 
-def _split_overlong_segments(segments: List[Dict], max_units: int = 13) -> List[Dict]:
+def _split_overlong_segments(segments: List[Dict], max_units: int = 11) -> List[Dict]:
     split_segments: List[Dict] = []
 
     for seg in segments:
@@ -858,8 +858,8 @@ def _script_based_subtitle_segments(char_units: List[Dict], script: str,
     return _normalize_segment_timing(segments)
 
 
-def words_to_subtitle_segments(words: List[Dict], target_chars: int = 14,
-                               hard_chars: int = 18,
+def words_to_subtitle_segments(words: List[Dict], target_chars: int = 12,
+                               hard_chars: int = 16,
                                min_chars: int = 3,
                                sentence_gap: float = 0.5,
                                clause_gap: float = 0.25,

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@/app/generated/prisma";
 
 import { prisma } from "@/app/lib/prisma";
 
@@ -6,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const digest = await prisma.newsDigest.findFirst({
-    where: { storiesJson: { not: null } },
+    where: { storiesJson: { not: Prisma.DbNull } },
     orderBy: { date: "desc" },
     select: {
       date: true,

@@ -1,20 +1,21 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@/app/generated/prisma";
 
 import { prisma } from "@/app/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const digest = await prisma.newsDigest.findFirst({
-    where: { storiesJson: { not: Prisma.DbNull } },
+  const digests = await prisma.newsDigest.findMany({
     orderBy: { date: "desc" },
+    take: 5,
     select: {
       date: true,
       title: true,
       storiesJson: true,
     },
   });
+
+  const digest = digests.find((d) => d.storiesJson != null);
 
   if (!digest || !digest.storiesJson) {
     return NextResponse.json({ ok: false, reason: "no stories found" });

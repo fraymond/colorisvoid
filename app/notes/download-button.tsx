@@ -34,7 +34,7 @@ export function DownloadScriptButton({
         whiteSpace: "nowrap",
       }}
     >
-      下载口播
+      文字下载
     </button>
   );
 }

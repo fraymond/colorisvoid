@@ -1,6 +1,9 @@
+import { getServerSession } from "next-auth";
 import { prisma } from "@/app/lib/prisma";
+import { authOptions } from "@/app/lib/auth";
 import type { StoryShape } from "@/app/lib/news-digest";
 import { DownloadScriptButton } from "./download-button";
+import NotesAdmin from "./notes-admin";
 import Link from "next/link";
 
 export const metadata = {
@@ -20,12 +23,41 @@ function formatDate(d: Date): string {
   });
 }
 
+const isDevBypass =
+  process.env.NODE_ENV === "development" && process.env.BYPASS_AUTH === "true";
+
+async function isAuthenticated(): Promise<boolean> {
+  if (isDevBypass) return true;
+  const session = await getServerSession(authOptions);
+  return !!session;
+}
+
 export default async function Page({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  const isAdmin = "admin" in params;
+  const authed = await isAuthenticated();
+
+  if (isAdmin && authed) {
+    return (
+      <section>
+        <h1 className="pageTitle">修炼 · 管理</h1>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          编辑故事、从新闻添加、删除。
+        </div>
+        <div style={{ marginBottom: 24 }}>
+          <Link href="/notes" style={{ fontSize: 13, color: "rgba(17,17,17,0.5)" }}>
+            ← 返回阅读
+          </Link>
+        </div>
+        <NotesAdmin />
+      </section>
+    );
+  }
+
   const page = Math.max(1, parseInt(String(params.page ?? "1"), 10) || 1);
 
   const [digests, total] = await Promise.all([
@@ -41,7 +73,17 @@ export default async function Page({
 
   return (
     <section>
-      <h1 className="pageTitle">修炼</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <h1 className="pageTitle">修炼</h1>
+        {authed && (
+          <Link
+            href="/notes?admin"
+            style={{ fontSize: 13, color: "rgba(17,17,17,0.4)", textDecoration: "none" }}
+          >
+            管理
+          </Link>
+        )}
+      </div>
       <div className="muted" style={{ marginBottom: 28 }}>
         硅基文明的修行产物
       </div>
@@ -153,7 +195,7 @@ export default async function Page({
                         </article>
                       ))}
                     </div>
-                  ) : (
+                  ) : d.script ? (
                     <article
                       style={{
                         paddingBottom: 28,
@@ -171,22 +213,6 @@ export default async function Page({
                           {d.title}
                         </div>
                       ) : null}
-                      {d.hashtags.length ? (
-                        <div
-                          className="muted"
-                          style={{
-                            fontSize: 13,
-                            marginBottom: 14,
-                            display: "flex",
-                            flexWrap: "wrap",
-                            gap: 10,
-                          }}
-                        >
-                          {d.hashtags.map((tag) => (
-                            <span key={tag}>{tag}</span>
-                          ))}
-                        </div>
-                      ) : null}
                       <div
                         style={{
                           fontSize: 15,
@@ -198,7 +224,7 @@ export default async function Page({
                         {d.script}
                       </div>
                     </article>
-                  )}
+                  ) : null}
                 </div>
               );
             })}

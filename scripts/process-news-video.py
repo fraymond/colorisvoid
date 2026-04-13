@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 # Paths
 # ---------------------------------------------------------------------------
 RAW_DIR = os.path.expanduser("~/Documents/AI_news_raw")
+QUEUE_DIR = os.path.join(RAW_DIR, "queued")
 OUT_DIR = os.path.expanduser("~/Documents/AI_news_processed")
 LOG_FILE = os.path.join(OUT_DIR, "process.log")
 VIDEO_EXTS = {".mp4", ".mov", ".MP4", ".MOV"}
@@ -1684,17 +1685,15 @@ def process_video(video_path: str) -> None:
         except Exception:
             log.exception("      CapCut draft generation failed (non-fatal).")
 
-        # 8. Archive original from raw (and companion .json/.txt if used)
-        archive_dir = os.path.join(RAW_DIR, "archive")
-        os.makedirs(archive_dir, exist_ok=True)
-        archive_path = unique_path(archive_dir, os.path.basename(video_path))
-        log.info("Archiving original to: %s", archive_path)
-        os.rename(video_path, archive_path)
-        for companion in [json_path, txt_path]:
-            if companion and os.path.isfile(companion):
-                comp_archive = unique_path(archive_dir, os.path.basename(companion))
-                os.rename(companion, comp_archive)
-                log.info("Archived companion to: %s", comp_archive)
+        # 8. Clean up source files
+        video_dir = os.path.dirname(video_path)
+        if video_dir.startswith(QUEUE_DIR):
+            shutil.rmtree(video_dir, ignore_errors=True)
+            log.info("Removed queue slot: %s", video_dir)
+        else:
+            for f in [video_path] + [c for c in [json_path, txt_path] if c and os.path.isfile(c)]:
+                os.remove(f)
+                log.info("Removed source file: %s", f)
 
         log.info("=== Done! Output: %s ===", out_path)
     finally:
@@ -1704,6 +1703,87 @@ def process_video(video_path: str) -> None:
             log.info("[beauty] Removed temp file: %s", beauty_temp_path)
 
 
+def _find_companions_for(video_path: str, all_videos: List[str]) -> List[str]:
+    """Return companion .json / .txt files for a video.
+    Checks same-base-name first, then falls back to any lone .json/.txt in the
+    folder that isn't a companion to another video."""
+    base = os.path.splitext(video_path)[0]
+    companions = []
+    for ext in [".json", ".JSON", ".txt", ".TXT"]:
+        candidate = base + ext
+        if os.path.isfile(candidate):
+            companions.append(candidate)
+    if companions:
+        return companions
+
+    folder = os.path.dirname(video_path)
+    other_bases = {os.path.splitext(v)[0] for v in all_videos if v != video_path}
+    for ext_group in [(".json",), (".txt",)]:
+        loose = [
+            os.path.join(folder, f)
+            for f in os.listdir(folder)
+            if f.lower().endswith(ext_group)
+            and os.path.isfile(os.path.join(folder, f))
+            and os.path.splitext(os.path.join(folder, f))[0] not in other_bases
+        ]
+        if len(loose) == 1:
+            companions.append(loose[0])
+    return companions
+
+
+def _intake_to_queue() -> List[str]:
+    """Move every video + its companions from RAW_DIR into isolated per-pair
+    subdirectories under QUEUE_DIR.  Returns the list of queued video paths."""
+    os.makedirs(QUEUE_DIR, exist_ok=True)
+
+    raw_videos = sorted(
+        os.path.join(RAW_DIR, f)
+        for f in os.listdir(RAW_DIR)
+        if os.path.splitext(f)[1] in VIDEO_EXTS and os.path.isfile(os.path.join(RAW_DIR, f))
+    )
+
+    queued_videos: List[str] = []
+    for idx, vpath in enumerate(raw_videos):
+        log.info("Waiting for file to stabilize: %s", os.path.basename(vpath))
+        if not wait_for_stable(vpath):
+            log.warning("File did not stabilize, skipping: %s", vpath)
+            continue
+
+        slot = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{idx}"
+        slot_dir = os.path.join(QUEUE_DIR, slot)
+        os.makedirs(slot_dir, exist_ok=True)
+
+        companions = _find_companions_for(vpath, raw_videos)
+
+        dst_video = os.path.join(slot_dir, os.path.basename(vpath))
+        os.rename(vpath, dst_video)
+        log.info("Queued video -> %s", dst_video)
+
+        for comp in companions:
+            dst_comp = os.path.join(slot_dir, os.path.basename(comp))
+            os.rename(comp, dst_comp)
+            log.info("Queued companion -> %s", dst_comp)
+
+        queued_videos.append(dst_video)
+
+    return queued_videos
+
+
+def _collect_already_queued() -> List[str]:
+    """Find videos in existing queue slots (from a previous interrupted run)."""
+    if not os.path.isdir(QUEUE_DIR):
+        return []
+    videos: List[str] = []
+    for slot in sorted(os.listdir(QUEUE_DIR)):
+        slot_dir = os.path.join(QUEUE_DIR, slot)
+        if not os.path.isdir(slot_dir):
+            continue
+        for f in os.listdir(slot_dir):
+            if os.path.splitext(f)[1] in VIDEO_EXTS:
+                videos.append(os.path.join(slot_dir, f))
+    return videos
+
+
 def main() -> None:
     os.makedirs(RAW_DIR, exist_ok=True)
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -1711,22 +1791,20 @@ def main() -> None:
 
     load_api_key()
 
-    videos = []
-    for f in os.listdir(RAW_DIR):
-        if os.path.splitext(f)[1] in VIDEO_EXTS:
-            full = os.path.join(RAW_DIR, f)
-            if os.path.isfile(full):
-                videos.append(full)
+    already_queued = _collect_already_queued()
+    newly_queued = _intake_to_queue()
+    all_queued = already_queued + newly_queued
 
-    if not videos:
+    if not all_queued:
         log.info("No videos found in %s", RAW_DIR)
         return
 
-    for vpath in sorted(videos):
-        log.info("Waiting for file to stabilize: %s", os.path.basename(vpath))
-        if not wait_for_stable(vpath):
-            log.warning("File did not stabilize, skipping: %s", vpath)
-            continue
+    if already_queued:
+        log.info("Resuming %d previously queued video(s).", len(already_queued))
+    if newly_queued:
+        log.info("Queued %d new video(s), RAW_DIR is now free for new files.", len(newly_queued))
+
+    for vpath in all_queued:
         try:
             process_video(vpath)
         except Exception:

@@ -298,7 +298,6 @@
       playbackFailedLine: "Playback failed for this line.",
       playbackFailedGeneric: "Could not reach the speech engine.",
       draftNoteError: "Couldn't reach the phonemizer (espeak-ng) on the server, so syllables and IPA below fall back to an approximate placeholder instead of real phonemes.",
-      autoTag: "Auto",
       playLineAriaPrefix: "Play line ",
       playLineAriaSuffix: " slowly",
       noAudioTitle: "Audio wasn't cached for this line when saved.",
@@ -339,7 +338,6 @@
       playbackFailedLine: "该行朗读失败。",
       playbackFailedGeneric: "无法连接语音引擎。",
       draftNoteError: "无法连接服务器上的自动注音引擎(espeak-ng),因此以下音节与音标暂时使用近似占位符,而非真实音素。",
-      autoTag: "自动",
       playLineAriaPrefix: "慢速朗读第 ",
       playLineAriaSuffix: " 行",
       noAudioTitle: "保存时未缓存此行的音频。",
@@ -592,13 +590,6 @@
 
     var content = document.createElement("div");
     content.className = "line-content";
-
-    if (line.isDraft) {
-      var tag = document.createElement("span");
-      tag.className = "draft-tag";
-      tag.textContent = tr().autoTag;
-      content.appendChild(tag);
-    }
 
     var textRow = document.createElement("div");
     textRow.className = "text-row";
@@ -905,8 +896,6 @@
     ".line-row.playing .play-btn{background:var(--accent);color:#fff;border-color:var(--accent);}",
     ".play-btn:disabled{opacity:0.45;cursor:not-allowed;}",
     ".line-content{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0;}",
-    ".draft-tag{align-self:flex-start;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.05em;",
-    "font-weight:700;color:var(--danger);border:1px solid currentColor;border-radius:5px;padding:1px 6px;}",
     ".text-row{font-size:1.22rem;line-height:1.6;}",
     ".ipa-row{font-family:'Gentium Plus','Doulos SIL',serif;font-style:italic;font-size:1.04rem;",
     "color:var(--muted);line-height:1.6;}",
@@ -1050,13 +1039,6 @@
       var content = document.createElement("div");
       content.className = "line-content";
 
-      if (line.isDraft) {
-        var tag = document.createElement("span");
-        tag.className = "draft-tag";
-        tag.textContent = L.autoTag;
-        content.appendChild(tag);
-      }
-
       var textRow = document.createElement("div");
       textRow.className = "text-row";
       var ipaRow = document.createElement("div");
@@ -1122,7 +1104,6 @@
     var L = {
       readAll: s.readAll,
       stop: s.stop,
-      autoTag: s.autoTag,
       playLineAriaPrefix: s.playLineAriaPrefix,
       playLineAriaSuffix: s.playLineAriaSuffix,
       noAudioTitle: s.noAudioTitle

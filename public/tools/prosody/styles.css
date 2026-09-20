@@ -258,14 +258,6 @@ section.results { display: flex; flex-direction: column; gap: 16px; }
 
 .line-content { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 
-.draft-tag {
-  align-self: flex-start;
-  font-family: "Source Sans 3", sans-serif; font-style: normal;
-  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;
-  color: var(--danger); border: 1px solid currentColor; border-radius: 5px;
-  padding: 1px 6px;
-}
-
 .text-row { font-size: 1.28rem; line-height: 1.6; }
 .ipa-row {
   font-family: "Gentium Plus", "Doulos SIL", serif;

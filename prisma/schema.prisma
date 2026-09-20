@@ -257,6 +257,16 @@ model SystemPrompt {
   updatedBy String?
 }
 
+model ProsodyParagraph {
+  id        Int      @id @default(autoincrement())
+  title     String   @default("")
+  text      String
+  language  String   @default("auto")
+  createdAt DateTime @default(now())
+
+  @@map("prosody_paragraphs")
+}
+
 enum DigestVersionStatus {
   DRAFT
   FINAL

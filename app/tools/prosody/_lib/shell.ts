@@ -32,6 +32,11 @@ export const PROSODY_HTML = `<!doctype html>
 <div class="layout">
   <aside>
     <div>
+      <div class="field-label" id="txt-saved-paragraphs" style="margin-bottom:8px;"></div>
+      <div class="saved-list" id="saved-list"></div>
+    </div>
+
+    <div>
       <h2 id="txt-your-text"></h2>
     </div>
     <div>
@@ -54,11 +59,6 @@ export const PROSODY_HTML = `<!doctype html>
     <div>
       <div class="field-label" id="txt-try-sample" style="margin-bottom:8px;"></div>
       <div class="chips" id="sample-chips"></div>
-    </div>
-
-    <div>
-      <div class="field-label" id="txt-saved-paragraphs" style="margin-bottom:8px;"></div>
-      <div class="saved-list" id="saved-list"></div>
     </div>
 
   </aside>

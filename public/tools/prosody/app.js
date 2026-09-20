@@ -283,7 +283,7 @@
       analyzeBtn: "Detect & transcribe",
       analyzeBtnLoading: "Transcribing…",
       saveBtn: "Save",
-      saveLocalBtn: "Save local copy",
+      saveLocalBtn: "Use Offline",
       saveLocalBtnLoading: "Preparing…",
       saveStatusSaved: "Saved.",
       saveStatusError: "Couldn't save.",
@@ -324,7 +324,7 @@
       analyzeBtn: "识别并转写",
       analyzeBtnLoading: "转写中…",
       saveBtn: "保存",
-      saveLocalBtn: "保存到本地",
+      saveLocalBtn: "离线使用",
       saveLocalBtnLoading: "准备中…",
       saveStatusSaved: "已保存。",
       saveStatusError: "保存失败。",
@@ -1252,5 +1252,14 @@
     // saved-paragraph URLs: just reload into the boot logic above.
     window.location.reload();
   });
+
+  // Caches the app shell (this page, styles.css, app.js) so the tool still
+  // opens without a network connection. API calls (paragraphs, TTS,
+  // phonemize) still need to be online -- see sw.js.
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw.js").catch(function () { /* ignore */ });
+    });
+  }
 
 })();

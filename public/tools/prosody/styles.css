@@ -107,7 +107,13 @@ header.top {
   gap: 26px;
   align-items: start;
 }
-@media (max-width: 860px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  /* On narrow screens, show the transcribed text (results) above the input
+     panel -- the DOM order (input first, for tab order) stays unchanged. */
+  aside { order: 2; }
+  section.results { order: 1; }
+}
 
 aside {
   background: var(--paper-raised);

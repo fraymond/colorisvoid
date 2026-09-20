@@ -211,7 +211,6 @@ section.results { display: flex; flex-direction: column; gap: 16px; }
 }
 .detected .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 .detected b { font-weight: 700; }
-.detected .confidence { color: var(--muted); }
 
 .results-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 

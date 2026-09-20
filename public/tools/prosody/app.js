@@ -307,7 +307,6 @@
       offlineNoAudio: "text and IPA only — no audio was cached when this was saved.",
       offlineFooter: "A standalone snapshot from Prosody. IPA for automatically transcribed lines is an approximate, even split of real IPA rather than a precise phonetic boundary.",
       langNames: { en: "English", de: "German", fr: "French", it: "Italian", es: "Spanish" },
-      confidenceSuffix: "% confidence",
       speedToggleLabel: "Speed",
       timeJustNow: "just now",
       timeMinuteSuffix: "m ago",
@@ -347,7 +346,6 @@
       offlineNoAudio: "仅含文本与音标 —— 保存时未缓存音频。",
       offlineFooter: "这是来自 Prosody 的独立快照。自动转写行的音标切分点只是对真实音标的均等切分,并非精确的语音学边界。",
       langNames: { en: "英语", de: "德语", fr: "法语", it: "意大利语", es: "西班牙语" },
-      confidenceSuffix: "% 置信度",
       speedToggleLabel: "朗读速度",
       timeJustNow: "刚刚",
       timeMinuteSuffix: "分钟前",
@@ -659,8 +657,7 @@
     currentBcp47 = BCP47[langKey] || "en-US";
 
     var name = tr().langNames[langKey] || langKey;
-    detectedText.innerHTML = "<b>" + name + "</b>" +
-      (confidence ? ' <span class="confidence">· ' + Math.round(confidence * 100) + tr().confidenceSuffix + "</span>" : "");
+    detectedText.innerHTML = "<b>" + name + "</b>";
 
     // Only surfaced on an actual phonemizer failure (see analyze()'s catch);
     // otherwise stays hidden -- no routine "this is auto-generated" note.

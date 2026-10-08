@@ -70,6 +70,8 @@ export const PROSODY_HTML = `<!doctype html>
         <span id="detected-text">—</span>
       </div>
       <div class="results-actions">
+        <span class="speed-label" id="txt-ipa-mode-label"></span>
+        <div class="speed-toggle" id="ipa-mode-toggle" role="group"></div>
         <span class="speed-label" id="txt-speed-label"></span>
         <div class="speed-toggle" id="speed-toggle" role="group"></div>
         <button class="btn btn-ghost" id="read-all-btn"></button>

@@ -170,23 +170,146 @@
     return words;
   }
 
+  // ---- IPA segmentation & syllabification ----
   // Real phonemization gives one IPA string per whole word, not per our
-  // (orthographic, approximate) syllable chunk -- so divide it evenly across
-  // however many syllable spans that word already has, character-wise. The
-  // symbols are then genuine IPA; only the exact cut point is approximate.
-  function splitIpaEvenly(ipa, n) {
-    if (n <= 1 || !ipa) return [ipa || ""];
-    var len = ipa.length;
-    var base = Math.floor(len / n);
-    var rem = len % n;
+  // (orthographic, approximate) syllable chunk. We split it into IPA segments
+  // (a base symbol plus its diacritics, so e.g. the nasal tilde never gets
+  // cut off its vowel), find the vowel nuclei, and cut between them using
+  // onset maximization. Falls back to an even split when the IPA's syllable
+  // count can't be lined up with the orthographic one.
+  var IPA_VOWELS = "aeiouyɑɐɒæɛɜəɚɘɵɞɤɯɪʏʊøœɔʌɨʉɶ";
+  var IPA_GLIDES = "jwɥ";
+  var IPA_LIQUIDS = "lrʁɹɾʎ";
+  var IPA_OBSTRUENTS = "pbtdkgɡfvszʃʒθðçxχ";
+
+  function ipaSegments(ipa) {
+    var segs = [];
+    var stress = "";
+    Array.from(ipa || "").forEach(function (ch) {
+      if (ch === "ˈ" || ch === "ˌ") { stress += ch; return; }
+      var prev = segs[segs.length - 1];
+      // Combining diacritics, length marks, modifier letters, and anything
+      // after a tie bar belong to the preceding symbol.
+      if (prev && (/[\u0300-\u036f\u1dc0-\u1dff\u02b0-\u02b7\u02d0\u02d1]/.test(ch) || /[\u0361\u035c]$/.test(prev.s))) {
+        prev.s += ch;
+        return;
+      }
+      segs.push({ s: ch, stress: stress });
+      stress = "";
+    });
+    if (stress && segs.length) segs[segs.length - 1].s += stress;
+    return segs;
+  }
+
+  function segBase(seg) { return seg ? seg.s.charAt(0) : ""; }
+  function isVowelSeg(seg) { return IPA_VOWELS.indexOf(segBase(seg)) !== -1 || seg.s.indexOf("\u0329") !== -1; }
+  function isNonSyllabic(seg) { return seg.s.indexOf("\u032f") !== -1; }
+
+  function nucleusRuns(segs, splitAdjacent) {
+    var runs = [];
+    segs.forEach(function (seg, i) {
+      if (!isVowelSeg(seg)) return;
+      var last = runs[runs.length - 1];
+      var touching = last && last[1] === i - 1;
+      if (touching && (!splitAdjacent || isNonSyllabic(seg) || isNonSyllabic(segs[i - 1]))) last[1] = i;
+      else runs.push([i, i]);
+    });
+    return runs;
+  }
+
+  function joinSegs(segs) {
+    // A stress mark anywhere in the chunk goes to its start, where IPA puts it.
+    var stress = "";
+    var body = segs.map(function (seg) { stress = stress || seg.stress; return seg.s; }).join("");
+    return stress + body;
+  }
+
+  function splitSegsEvenly(segs, n) {
+    var base = Math.floor(segs.length / n);
+    var rem = segs.length % n;
     var parts = [];
     var pos = 0;
     for (var i = 0; i < n; i++) {
       var size = base + (i < rem ? 1 : 0);
-      parts.push(ipa.slice(pos, pos + size));
+      parts.push(joinSegs(segs.slice(pos, pos + size)));
       pos += size;
     }
     return parts;
+  }
+
+  function syllabifyIpa(ipa, n) {
+    if (!ipa) return new Array(Math.max(1, n)).fill("");
+    var segs = ipaSegments(ipa);
+    if (n <= 1) return [joinSegs(segs)];
+    var runs = nucleusRuns(segs, false);
+    if (runs.length < n) {
+      var split = nucleusRuns(segs, true);
+      if (split.length <= n) runs = split;
+    }
+    if (!runs.length || runs.length > n) return splitSegsEvenly(segs, n);
+
+    var cuts = [0];
+    for (var k = 0; k < runs.length - 1; k++) {
+      var cs = runs[k][1] + 1;
+      var ce = runs[k + 1][0];
+      var cut = ce - 1;
+      var pair = ce - cs >= 2 ? segBase(segs[ce - 2]) + segBase(segs[ce - 1]) : "";
+      if (ce - cs <= 1) cut = cs;
+      else if (/^(tʃ|dʒ|ts|dz)$/.test(pair) ||
+               (IPA_OBSTRUENTS.indexOf(pair.charAt(0)) !== -1 &&
+                (IPA_LIQUIDS + IPA_GLIDES).indexOf(pair.charAt(1)) !== -1)) cut = ce - 2;
+      cuts.push(cut);
+    }
+    cuts.push(segs.length);
+    var parts = [];
+    for (var c = 0; c < cuts.length - 1; c++) parts.push(joinSegs(segs.slice(cuts[c], cuts[c + 1])));
+    // Fewer sounded syllables than written ones: the trailing written
+    // syllables are silent (e.g. "tout|es" -> /ˈtut/ + nothing).
+    while (parts.length < n) parts.push("");
+    return parts;
+  }
+
+  // ---- Sung (lyric diction) IPA ----
+  // Derived from the spoken IPA at render time. French follows classical
+  // lyric diction: rolled/flipped [r], fronted [a] (so [ɑ̃] -> [ã]), open [ɛ]
+  // in les/des/mes/tes/ses/ces, sung mute e [ə], and no word stress marks
+  // (French has none -- the music places the accents).
+  var FR_VOWEL_LETTERS = "aeiouyàâäéèêëïîôöùûüœæ";
+
+  function singSegmental(ipa, langKey) {
+    var s = ipa.replace(/ʁ/g, "r");
+    if (langKey === "fr") s = s.replace(/[ˈˌ]/g, "").replace(/ɑ/g, "a");
+    return s;
+  }
+
+  function singWordEnd(ipa, orth, nextOrth, langKey) {
+    if (langKey !== "fr" || !ipa) return ipa;
+    var w = orth.toLowerCase();
+    if (new RegExp("^[^" + FR_VOWEL_LETTERS + "]+es$").test(w) && /e$/.test(ipa)) {
+      return ipa.slice(0, -1) + "ɛ";
+    }
+    var muet = w.match(new RegExp("[^" + FR_VOWEL_LETTERS + "'’-]e(s?)$"));
+    var segs = ipaSegments(ipa);
+    if (muet && segs.length && !isVowelSeg(segs[segs.length - 1])) {
+      // Elided before a vowel or mute h; "-es" keeps its schwa and links with [z].
+      var vowelNext = new RegExp("^[h" + FR_VOWEL_LETTERS + "]", "i").test(nextOrth || "");
+      if (!vowelNext) return ipa + "ə";
+      if (muet[1]) return ipa + "əz";
+    }
+    return ipa;
+  }
+
+  function singSyllables(word, nextWord, langKey) {
+    var orth = word.t.join("");
+    var nextOrth = nextWord ? nextWord.t.join("") : "";
+    if (typeof word.ipa === "string") {
+      var whole = singWordEnd(singSegmental(word.ipa, langKey), orth, nextOrth, langKey);
+      return syllabifyIpa(whole, word.t.length);
+    }
+    // Curated samples are already split by hand -- transform syllable by syllable.
+    var p = word.p.map(function (s) { return singSegmental(s, langKey); });
+    p[p.length - 1] = singWordEnd(p[p.length - 1], orth, nextOrth, langKey);
+    return p;
   }
 
   function phonemizeWords(words, languageKey) {
@@ -305,9 +428,14 @@
       offlineSpeedWord: "speed",
       offlineWorksOffline: "works offline, no internet needed.",
       offlineNoAudio: "text and IPA only — no audio was cached when this was saved.",
-      offlineFooter: "A standalone snapshot from Prosody. IPA for automatically transcribed lines is an approximate, even split of real IPA rather than a precise phonetic boundary.",
+      offlineFooter: "A standalone snapshot from Prosody. Syllable breaks in automatically transcribed IPA are approximate rather than precise phonetic boundaries.",
+      offlineSungIpa: "sung IPA",
+      offlineSpokenIpa: "spoken IPA",
       langNames: { en: "English", de: "German", fr: "French", it: "Italian", es: "Spanish" },
       speedToggleLabel: "Speed",
+      ipaModeLabel: "IPA",
+      ipaModeSing: "Sing",
+      ipaModeSpeak: "Speak",
       timeJustNow: "just now",
       timeMinuteSuffix: "m ago",
       timeHourSuffix: "h ago",
@@ -344,9 +472,14 @@
       offlineSpeedWord: "速度",
       offlineWorksOffline: "可离线使用,无需联网。",
       offlineNoAudio: "仅含文本与音标 —— 保存时未缓存音频。",
-      offlineFooter: "这是来自 Prosody 的独立快照。自动转写行的音标切分点只是对真实音标的均等切分,并非精确的语音学边界。",
+      offlineFooter: "这是来自 Prosody 的独立快照。自动转写行的音标音节切分点只是近似值,并非精确的语音学边界。",
+      offlineSungIpa: "演唱音标",
+      offlineSpokenIpa: "口语音标",
       langNames: { en: "英语", de: "德语", fr: "法语", it: "意大利语", es: "西班牙语" },
       speedToggleLabel: "朗读速度",
+      ipaModeLabel: "音标",
+      ipaModeSing: "演唱",
+      ipaModeSpeak: "口语",
       timeJustNow: "刚刚",
       timeMinuteSuffix: "分钟前",
       timeHourSuffix: "小时前",
@@ -361,6 +494,12 @@
   } catch (e) { /* private browsing / blocked storage */ }
 
   function tr() { return STRINGS[currentLocale]; }
+
+  // Which IPA the results show: sung (lyric diction, the default) or spoken.
+  var ipaMode = "sing";
+  try {
+    if (localStorage.getItem("prosody-ipa-mode") === "speak") ipaMode = "speak";
+  } catch (e) { /* private browsing / blocked storage */ }
 
   // ---- DOM refs ----
   var textarea = document.getElementById("input-text");
@@ -385,6 +524,8 @@
   var txtTrySample = document.getElementById("txt-try-sample");
   var txtSavedParagraphs = document.getElementById("txt-saved-paragraphs");
   var txtSpeedLabel = document.getElementById("txt-speed-label");
+  var ipaModeToggleEl = document.getElementById("ipa-mode-toggle");
+  var txtIpaModeLabel = document.getElementById("txt-ipa-mode-label");
 
   var ttsConfigured = null;
   var currentBcp47 = "en-US";
@@ -410,6 +551,24 @@
         renderSpeedToggle();
       });
       speedToggleEl.appendChild(btn);
+    });
+  }
+
+  function renderIpaModeToggle() {
+    ipaModeToggleEl.innerHTML = "";
+    [{ value: "sing", label: tr().ipaModeSing }, { value: "speak", label: tr().ipaModeSpeak }].forEach(function (m) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = m.label;
+      btn.setAttribute("aria-pressed", m.value === ipaMode ? "true" : "false");
+      btn.addEventListener("click", function () {
+        if (ipaMode === m.value) return;
+        ipaMode = m.value;
+        try { localStorage.setItem("prosody-ipa-mode", ipaMode); } catch (e) { /* ignore */ }
+        renderIpaModeToggle();
+        if (lastRender) render(lastRender.langKey, lastRender.lines, lastRender.isDraft, lastRender.confidence);
+      });
+      ipaModeToggleEl.appendChild(btn);
     });
   }
 
@@ -615,7 +774,7 @@
 
         flat.push({ textEl: tEl, ipaEl: pEl });
 
-        if (si < word.t.length - 1) {
+        if (si < word.t.length - 1 && word.p[si + 1]) {
           var dotP = document.createElement("span");
           dotP.className = "dot"; dotP.textContent = ".";
           ipaRow.appendChild(dotP);
@@ -664,7 +823,18 @@
     draftNoteEl.hidden = true;
 
     lines.forEach(function (l, i) {
-      var line = { text: l.text, words: l.words, isDraft: isDraft };
+      // Audio depends only on the text, so the cache lives on the source line
+      // and survives re-renders (Sing/Speak or locale switches).
+      l._cache = l._cache || {};
+      var words = l.words.map(function (w, wi) {
+        var p = w.p;
+        // Draft words without real IPA yet are just a lowercase placeholder.
+        if (ipaMode === "sing" && (!isDraft || typeof w.ipa === "string")) {
+          p = singSyllables(w, l.words[wi + 1], langKey);
+        }
+        return { t: w.t, p: p, punct: w.punct };
+      });
+      var line = { text: l.text, words: words, isDraft: isDraft, _cache: l._cache };
       currentLines.push(line);
       buildLineRow(line, i);
     });
@@ -718,7 +888,9 @@
         var idx = 0;
         draftLines.forEach(function (l) {
           l.words.forEach(function (w) {
-            w.p = splitIpaEvenly(ipaList[idx++] || "", w.t.length);
+            // espeak-ng tags clitics (le, la, de, les...) with a trailing "-"; not IPA.
+            w.ipa = (ipaList[idx++] || "").replace(/-/g, "");
+            w.p = syllabifyIpa(w.ipa, w.t.length);
           });
         });
         if (textarea.value.trim() === text) {
@@ -1059,7 +1231,7 @@
 
           flat.push({ textEl: tEl, ipaEl: pEl });
 
-          if (si < word.t.length - 1) {
+          if (si < word.t.length - 1 && word.p[si + 1]) {
             var dotP = document.createElement("span");
             dotP.className = "dot"; dotP.textContent = ".";
             ipaRow.appendChild(dotP);
@@ -1120,6 +1292,7 @@
       "</head><body>",
       '<header class="top"><h1>' + titleEsc + "</h1>",
       '<p class="tagline">' + escapeXml(s.offlineTagline) + " · " + speedLabel + " " + escapeXml(s.offlineSpeedWord) + " · " +
+        escapeXml(ipaMode === "sing" ? s.offlineSungIpa : s.offlineSpokenIpa) + " · " +
         escapeXml(anyAudio ? s.offlineWorksOffline : s.offlineNoAudio) +
         "</p></header>",
       '<div class="lines" id="lines"></div>',
@@ -1176,6 +1349,9 @@
     txtSavedParagraphs.textContent = s.savedParagraphs;
     txtSpeedLabel.textContent = s.speedToggleLabel;
     speedToggleEl.setAttribute("aria-label", s.speedToggleLabel);
+    txtIpaModeLabel.textContent = s.ipaModeLabel;
+    ipaModeToggleEl.setAttribute("aria-label", s.ipaModeLabel);
+    renderIpaModeToggle();
 
     Array.prototype.forEach.call(langToggleEl.children, function (btn) {
       btn.setAttribute("aria-pressed", btn.dataset.locale === currentLocale ? "true" : "false");

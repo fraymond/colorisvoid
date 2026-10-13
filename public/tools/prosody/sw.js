@@ -4,7 +4,7 @@
 // site. API routes under /tools/prosody/api/ are deliberately left alone --
 // they need a live network and should fail normally when offline.
 
-const CACHE_NAME = "prosody-shell-v2";
+const CACHE_NAME = "prosody-shell-v3";
 const SHELL_URL = "/tools/prosody";
 const SHELL_ASSETS = [SHELL_URL, "/tools/prosody/styles.css", "/tools/prosody/app.js"];
 

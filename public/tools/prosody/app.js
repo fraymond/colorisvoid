@@ -43,7 +43,7 @@
         { t: ["wie"], p: ["viː"] },
         { t: ["geht"], p: ["ɡeːt"] },
         { t: ["es"], p: ["ɛs"] },
-        { t: ["dir"], p: ["dɪɐ̯"], punct: "?" }
+        { t: ["dir"], p: ["diːɐ̯"], punct: "?" }
       ] }
     ] },
     fr: { lines: [
@@ -126,10 +126,47 @@
     return { key: best, label: LABELS[best], bcp47: BCP47[best], confidence: confidence };
   }
 
+  // A single English line inside a non-English text (e.g. a heading like
+  // "Excerpt from An die Musik:") is phonemized and voiced as English. Only
+  // words that don't exist in the other four languages count as evidence.
+  var EN_MARKERS = ["the", "from", "of", "and", "with", "by", "excerpt", "translation", "translated",
+    "lyrics", "poem", "song", "words", "music", "act", "scene"];
+
+  function lineLanguage(line, docKey) {
+    if (docKey === "en") return docKey;
+    var words = line.toLowerCase().match(/[\p{L}']+/gu) || [];
+    var en = 0, doc = 0;
+    words.forEach(function (w) {
+      if (EN_MARKERS.indexOf(w) !== -1) en++;
+      if ((KEYWORDS[docKey] || []).indexOf(w) !== -1) doc++;
+    });
+    return en > doc ? "en" : docKey;
+  }
+
+  // Inside such an English line, a run of words containing a word of the
+  // text's own language (e.g. the German title in "Excerpt from An die
+  // Musik") stays in that language.
+  function tagForeignRuns(words, lineLang, docKey) {
+    if (lineLang === docKey) return;
+    var run = [];
+    function flush() {
+      var hasDocWord = run.some(function (w) {
+        return (KEYWORDS[docKey] || []).indexOf(w.t.join("").toLowerCase()) !== -1;
+      });
+      if (hasDocWord) run.forEach(function (w) { w.lang = docKey; });
+      run = [];
+    }
+    words.forEach(function (w) {
+      if (EN_MARKERS.indexOf(w.t.join("").toLowerCase()) !== -1) flush();
+      else run.push(w);
+    });
+    flush();
+  }
+
   var VOWELS = "aeiouyàâäéèêëïîôöùûüáíóúãõ";
   var VOWELS_UP = VOWELS.toUpperCase();
   function naiveSyllables(word) {
-    var clean = word.replace(/[^\p{L}'-]/gu, "");
+    var clean = word.replace(/[^\p{L}\p{M}'-]/gu, "");
     if (!clean) return [word];
     var re = new RegExp("[^" + VOWELS + VOWELS_UP + "]*[" + VOWELS + VOWELS_UP + "]+[^" + VOWELS + VOWELS_UP + "]*", "g");
     var m = clean.match(re);
@@ -161,7 +198,7 @@
         if (words.length) { words[words.length - 1].punct += tok; }
         return;
       }
-      var m = tok.match(/^([\p{L}'-]+)([.,!?;:]*)$/u);
+      var m = tok.match(/^([\p{L}\p{M}'-]+)([.,!?;:]*)$/u);
       var core = m ? m[1] : tok;
       var punct = m ? m[2] : "";
       var syl = naiveSyllables(core);
@@ -237,7 +274,27 @@
     return parts;
   }
 
-  function syllabifyIpa(ipa, n) {
+  // How many consonants before a nucleus start its syllable. German only
+  // allows a small set of onset clusters (no s+C, no tl/dl), so e.g.
+  // herz.lich, fried.lich, zer.stückt, em.pfan.ge.
+  var DE_ONSET2 = /^(tʃ|dʒ|ts|dz|pf|[pbkɡgfvʃ][lrʁɾ]|[td][rʁɾ]|[pbtdkɡgfvʃçx]j|kv|ʃ[vmntp])$/;
+  var DE_ONSET3 = /^(ʃ[tp][rʁɾ]|tsv|pf[lrʁɾ])$/;
+
+  function onsetLength(segs, cs, ce, langKey) {
+    var len = ce - cs;
+    if (len <= 1) return Math.max(0, len);
+    var bases = segs.slice(cs, ce).map(segBase);
+    if (langKey === "de") {
+      if (len >= 3 && DE_ONSET3.test(bases.slice(-3).join(""))) return 3;
+      return DE_ONSET2.test(bases.slice(-2).join("")) ? 2 : 1;
+    }
+    var pair = bases.slice(-2).join("");
+    return (/^(tʃ|dʒ|ts|dz)$/.test(pair) ||
+      (IPA_OBSTRUENTS.indexOf(pair.charAt(0)) !== -1 &&
+       (IPA_LIQUIDS + IPA_GLIDES).indexOf(pair.charAt(1)) !== -1)) ? 2 : 1;
+  }
+
+  function syllabifyIpa(ipa, n, langKey) {
     if (!ipa) return new Array(Math.max(1, n)).fill("");
     var segs = ipaSegments(ipa);
     if (n <= 1) return [joinSegs(segs)];
@@ -252,13 +309,7 @@
     for (var k = 0; k < runs.length - 1; k++) {
       var cs = runs[k][1] + 1;
       var ce = runs[k + 1][0];
-      var cut = ce - 1;
-      var pair = ce - cs >= 2 ? segBase(segs[ce - 2]) + segBase(segs[ce - 1]) : "";
-      if (ce - cs <= 1) cut = cs;
-      else if (/^(tʃ|dʒ|ts|dz)$/.test(pair) ||
-               (IPA_OBSTRUENTS.indexOf(pair.charAt(0)) !== -1 &&
-                (IPA_LIQUIDS + IPA_GLIDES).indexOf(pair.charAt(1)) !== -1)) cut = ce - 2;
-      cuts.push(cut);
+      cuts.push(ce - onsetLength(segs, cs, ce, langKey));
     }
     cuts.push(segs.length);
     var parts = [];
@@ -269,17 +320,52 @@
     return parts;
   }
 
+  // ---- Spoken IPA clean-up (German) ----
+  // espeak-ng's German differs from standard (Duden) transcription in a few
+  // systematic ways: -er as [ɜ] instead of [ɐ], long a as [ɑː], a consonant
+  // r after long vowels where German has the vocalized "schwa-r" [ɐ̯], and a
+  // spelled-out lengthening h ("Reihn"). Plus a few words it gets wrong.
+  var DE_LEXICON = {
+    der: "dˈeːɐ̯", er: "ˈeːɐ̯", vor: "fˈoːɐ̯",
+    chloen: "klˈoːən", vergebne: "fɛɐ̯ɡˈeːbnə", "händedruck": "hˈɛndədɾˌʊk"
+  };
+  var NO_VOWEL_AHEAD = "(?![ˈˌ]?[" + IPA_VOWELS + "])";
+
+  function normalizeSpokenIpa(ipa, orth, langKey) {
+    if (langKey !== "de" || !ipa) return ipa;
+    var w = orth.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(DE_LEXICON, w)) return DE_LEXICON[w];
+    var s = ipa.replace(/ɜ/g, "ɐ").replace(/ɑ/g, "a");
+    s = s.replace(new RegExp("h" + NO_VOWEL_AHEAD, "g"), "");
+    s = s.replace(new RegExp("ː[ɾrʁ]" + NO_VOWEL_AHEAD, "g"), "ːɐ̯");
+    // Unstressed ver-/zer-/er- vocalize their r too (verrückt, erschlossen).
+    if (/^(ver|zer|er)/.test(w)) s = s.replace(new RegExp("^(f|ts)?ɛ[ɾrʁ]" + NO_VOWEL_AHEAD), "$1ɛɐ̯");
+    if (/sucht/.test(w)) s = s.replace(/uːx/g, "ʊx");
+    return s;
+  }
+
   // ---- Sung (lyric diction) IPA ----
   // Derived from the spoken IPA at render time. French follows classical
   // lyric diction: rolled/flipped [r], fronted [a] (so [ɑ̃] -> [ã]), open [ɛ]
   // in les/des/mes/tes/ses/ces, sung mute e [ə], and no word stress marks
-  // (French has none -- the music places the accents).
+  // (French has none -- the music places the accents). German: flipped/rolled
+  // [r], the schwa-r sung as a full [ɐ], diphthongs as sung [ae ao ɔø], and a
+  // glottal onset [ʔ] on vowel-initial words.
   var FR_VOWEL_LETTERS = "aeiouyàâäéèêëïîôöùûüœæ";
 
   function singSegmental(ipa, langKey) {
     var s = ipa.replace(/ʁ/g, "r");
     if (langKey === "fr") s = s.replace(/[ˈˌ]/g, "").replace(/ɑ/g, "a");
+    if (langKey === "de") {
+      s = s.replace(/ɾ/g, "r").replace(/ɐ\u032f/g, "ɐ")
+        .replace(/aɪ/g, "ae").replace(/aʊ/g, "ao").replace(/ɔʏ/g, "ɔø");
+    }
     return s;
+  }
+
+  function singWordStart(ipa, langKey) {
+    if (langKey !== "de" || !ipa) return ipa;
+    return ipa.replace(new RegExp("^([ˈˌ]*)(?=[" + IPA_VOWELS + "])"), "$1ʔ");
   }
 
   function singWordEnd(ipa, orth, nextOrth, langKey) {
@@ -304,10 +390,11 @@
     var nextOrth = nextWord ? nextWord.t.join("") : "";
     if (typeof word.ipa === "string") {
       var whole = singWordEnd(singSegmental(word.ipa, langKey), orth, nextOrth, langKey);
-      return syllabifyIpa(whole, word.t.length);
+      return syllabifyIpa(singWordStart(whole, langKey), word.t.length, langKey);
     }
     // Curated samples are already split by hand -- transform syllable by syllable.
     var p = word.p.map(function (s) { return singSegmental(s, langKey); });
+    p[0] = singWordStart(p[0], langKey);
     p[p.length - 1] = singWordEnd(p[p.length - 1], orth, nextOrth, langKey);
     return p;
   }
@@ -357,7 +444,11 @@
     var parts = [];
     line.words.forEach(function (word, wi) {
       parts.push('<mark name="w' + wi + '"/>');
-      parts.push(escapeXml(word.t.join("")));
+      var wordText = escapeXml(word.t.join(""));
+      if (word.lang && word.lang !== line.lang && BCP47[word.lang]) {
+        wordText = '<lang xml:lang="' + BCP47[word.lang] + '">' + wordText + "</lang>";
+      }
+      parts.push(wordText);
       if (word.punct) parts.push(escapeXml(word.punct));
       if (wi < line.words.length - 1) parts.push(" ");
     });
@@ -631,7 +722,7 @@
     return fetch("api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ssml: ssml, languageCode: currentBcp47, speakingRate: speed })
+      body: JSON.stringify({ ssml: ssml, languageCode: BCP47[line.lang] || currentBcp47, speakingRate: speed })
     })
       .then(function (resp) {
         return resp.json().then(function (data) {
@@ -826,15 +917,16 @@
       // Audio depends only on the text, so the cache lives on the source line
       // and survives re-renders (Sing/Speak or locale switches).
       l._cache = l._cache || {};
+      var lineLang = l.lang || langKey;
       var words = l.words.map(function (w, wi) {
         var p = w.p;
         // Draft words without real IPA yet are just a lowercase placeholder.
         if (ipaMode === "sing" && (!isDraft || typeof w.ipa === "string")) {
-          p = singSyllables(w, l.words[wi + 1], langKey);
+          p = singSyllables(w, l.words[wi + 1], w.lang || lineLang);
         }
-        return { t: w.t, p: p, punct: w.punct };
+        return { t: w.t, p: p, punct: w.punct, lang: w.lang };
       });
-      var line = { text: l.text, words: words, isDraft: isDraft, _cache: l._cache };
+      var line = { text: l.text, lang: lineLang, words: words, isDraft: isDraft, _cache: l._cache };
       currentLines.push(line);
       buildLineRow(line, i);
     });
@@ -857,7 +949,9 @@
   }
 
   function analyze() {
-    var text = textarea.value.trim();
+    // Pasted text often spells ü/ö/ä as a base letter + combining mark;
+    // compose them so they're one letter for display and the phonemizer.
+    var text = textarea.value.normalize("NFC").trim();
     if (!text) return;
     var matchedKey = matchedSampleKey(text);
     setActiveChip(matchedKey);
@@ -869,31 +963,42 @@
 
     var detected = detectLanguage(text);
     var draftLines = splitIntoLines(text).map(function (s) {
-      return { text: s, words: naiveWordSplit(s) };
+      var lang = lineLanguage(s, detected.key);
+      var words = naiveWordSplit(s);
+      tagForeignRuns(words, lang, detected.key);
+      return { text: s, lang: lang, words: words };
     });
 
     // Render immediately with a placeholder, then upgrade to real IPA once
     // the phonemizer responds, so the UI never sits blank on a slow request.
     render(detected.key, draftLines, true, detected.confidence);
 
-    var flatWords = [];
-    draftLines.forEach(function (l) { l.words.forEach(function (w) { flatWords.push(w.t.join("")); }); });
-    if (!flatWords.length) return;
+    // One phonemizer request per language present (normally just one).
+    var groups = {};
+    draftLines.forEach(function (l) {
+      l.words.forEach(function (w) {
+        var lk = w.lang || l.lang;
+        (groups[lk] = groups[lk] || []).push(w);
+      });
+    });
+    var langs = Object.keys(groups);
+    if (!langs.length) return;
 
     analyzeBtn.disabled = true;
     analyzeBtn.textContent = tr().analyzeBtnLoading;
 
-    phonemizeWords(flatWords, detected.key)
-      .then(function (ipaList) {
-        var idx = 0;
-        draftLines.forEach(function (l) {
-          l.words.forEach(function (w) {
-            // espeak-ng tags clitics (le, la, de, les...) with a trailing "-"; not IPA.
-            w.ipa = (ipaList[idx++] || "").replace(/-/g, "");
-            w.p = syllabifyIpa(w.ipa, w.t.length);
-          });
+    Promise.all(langs.map(function (lk) {
+      var group = groups[lk];
+      return phonemizeWords(group.map(function (w) { return w.t.join(""); }), lk).then(function (ipaList) {
+        group.forEach(function (w, i) {
+          // espeak-ng tags clitics (le, la, de, les...) with a trailing "-"; not IPA.
+          w.ipa = normalizeSpokenIpa((ipaList[i] || "").replace(/-/g, ""), w.t.join(""), lk);
+          w.p = syllabifyIpa(w.ipa, w.t.length, lk);
         });
-        if (textarea.value.trim() === text) {
+      });
+    }))
+      .then(function () {
+        if (textarea.value.normalize("NFC").trim() === text) {
           render(detected.key, draftLines, true, detected.confidence);
         }
       })
@@ -1009,7 +1114,7 @@
   }
 
   function loadParagraph(item) {
-    textarea.value = item.text;
+    textarea.value = item.text.normalize("NFC");
     titleInput.value = item.title || "";
     analyze();
   }
@@ -1020,7 +1125,7 @@
   }
 
   saveBtn.addEventListener("click", function () {
-    var text = textarea.value.trim();
+    var text = textarea.value.normalize("NFC").trim();
     if (!text) return;
     var title = titleInput.value.trim() || firstLineTitle(text);
     var language = resolveLanguageKey(text);

@@ -194,6 +194,69 @@ a {
   color: var(--muted);
 }
 
+.toolGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.toolCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid rgba(17, 17, 17, 0.1);
+  border-radius: var(--radius);
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.toolCard:hover {
+  border-color: rgba(17, 17, 17, 0.24);
+  background: rgba(17, 17, 17, 0.02);
+}
+
+.toolCard:focus-visible {
+  outline: 2px solid rgba(17, 17, 17, 0.4);
+  outline-offset: 2px;
+}
+
+.toolLogo {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 15px;
+}
+
+.toolText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.toolName {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(17, 17, 17, 0.88);
+}
+
+.toolSubtitle {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.toolDesc {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
 .siteFooter {
   padding: 42px 0 56px 0;
 }

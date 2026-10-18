@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-labelledby="t">
+  <title id="t">Prosody</title>
+  <rect width="120" height="120" rx="27" fill="#146e67"/>
+  <!-- Syllable "beats" rising and falling like a spoken line; the stressed one is highlighted. -->
+  <g fill="#fff">
+    <rect x="21" y="71" width="11" height="24" rx="5.5"/>
+    <rect x="39" y="57" width="11" height="38" rx="5.5"/>
+    <rect x="75" y="63" width="11" height="32" rx="5.5"/>
+    <rect x="93" y="75" width="11" height="20" rx="5.5"/>
+  </g>
+  <rect x="57" y="41" width="11" height="54" rx="5.5" fill="#f0ab4c"/>
+  <!-- IPA primary-stress mark ˈ before the stressed syllable. -->
+  <rect x="49" y="25" width="5" height="13" rx="2.5" fill="#f0ab4c" transform="rotate(12 51.5 31.5)"/>
+</svg>
